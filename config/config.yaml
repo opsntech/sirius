@@ -4,7 +4,7 @@
 server:
   host: 0.0.0.0
   port: 8080
-  workers: 4
+  workers: 1  # Single worker to prevent duplicate event processing
 
 # NVIDIA NIM Configuration
 nvidia:
@@ -12,7 +12,7 @@ nvidia:
 
   development:
     base_url: https://integrate.api.nvidia.com/v1
-    model: meta/llama-3.1-70b-instruct
+    model: qwen/qwen2.5-coder-32b-instruct
     api_key: ${NVIDIA_API_KEY}  # Set via environment variable
     timeout: 60
     max_tokens: 4096
