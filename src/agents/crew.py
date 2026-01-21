@@ -1,12 +1,12 @@
 """CrewAI agent definitions for the DevOps On-Call Agent."""
 
 import asyncio
+import os
 from datetime import datetime
 from typing import Optional
 
 import structlog
-from crewai import Agent, Crew, Process, Task
-from langchain_openai import ChatOpenAI
+from crewai import Agent, Crew, Process, Task, LLM
 
 from src.config import Settings, get_settings
 from src.models.incident import Incident, IncidentStatus, InvestigationStep, RemediationAction
@@ -34,16 +34,19 @@ class DevOpsCrew:
         self._llm = self._create_llm()
         self._agents = self._create_agents()
 
-    def _create_llm(self) -> ChatOpenAI:
-        """Create the LangChain LLM for agents."""
+    def _create_llm(self) -> LLM:
+        """Create the CrewAI LLM for agents using NVIDIA NIM."""
         config = self._settings.nvidia
-        return ChatOpenAI(
+
+        # Set environment variable for API key
+        os.environ["OPENAI_API_KEY"] = config.api_key
+
+        # Use CrewAI's LLM wrapper with OpenAI-compatible endpoint
+        return LLM(
+            model=f"openai/{config.model}",
             base_url=config.base_url,
-            api_key=config.api_key,
-            model=config.model,
             temperature=config.temperature,
             max_tokens=config.max_tokens,
-            timeout=config.timeout,
         )
 
     def _create_agents(self) -> dict:
