@@ -379,6 +379,11 @@ class ApprovalManager:
 
     Determines whether actions need approval and handles the
     approval process via Slack or other channels.
+
+    Note: Currently, interactive Slack approval is not fully implemented
+    (requires Slack app with interaction endpoints). For now:
+    - Low risk: Auto-approved and executed
+    - Medium/High/Critical: Rejected with notification (requires manual intervention)
     """
 
     def __init__(self, settings: Optional[Settings] = None):
@@ -408,6 +413,12 @@ class ApprovalManager:
         """
         Request approval for a remediation action.
 
+        For low-risk actions: Auto-approve immediately.
+        For higher-risk actions: Reject with a message indicating manual intervention needed.
+
+        Note: Full interactive Slack approval would require a Slack app with
+        interaction endpoints. For now, we auto-approve low risk and reject others.
+
         Args:
             incident: The incident requiring remediation
             action: The proposed remediation action
@@ -416,22 +427,38 @@ class ApprovalManager:
         Returns:
             ApprovalResult with approval status
         """
+        risk = action.risk_level.lower()
+
         if not self.requires_approval(action):
             logger.info(
                 "Action auto-approved",
                 incident_id=incident.id,
                 action_type=action.action_type,
-                risk_level=action.risk_level,
+                risk_level=risk,
             )
             return ApprovalResult(
                 approved=True,
                 approved_by="auto",
-                reason="Auto-approved based on risk level",
+                reason=f"Auto-approved: {risk} risk action",
             )
 
-        # Request approval via Slack
-        return await self._slack_bot.request_approval(
-            incident, action, execution_record
+        # For higher risk actions, we don't execute automatically
+        # The notification will include the recommended action for manual review
+        logger.info(
+            "Action requires manual approval - not auto-executing",
+            incident_id=incident.id,
+            action_type=action.action_type,
+            risk_level=risk,
+        )
+
+        # Mark that approval was requested (for audit trail)
+        execution_record.request_approval("slack_notification", "pending_manual")
+
+        return ApprovalResult(
+            approved=False,
+            approved_by=None,
+            reason=f"Manual approval required for {risk} risk action. "
+                   f"Review the recommendation and execute manually if appropriate: {action.command}",
         )
 
 
