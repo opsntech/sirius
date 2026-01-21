@@ -294,8 +294,7 @@ def check_recent_changes(host: str) -> str:
     return _run_async(_ssh_exec(host, command))
 
 
-# List of essential investigation tools for CrewAI agents
-# Reduced set to prevent context overflow from too many tool calls
+# All investigation tools for CrewAI agents
 CREWAI_INVESTIGATION_TOOLS = [
     check_system_overview,  # Best first step - gives comprehensive view
     check_cpu_usage,
@@ -303,11 +302,8 @@ CREWAI_INVESTIGATION_TOOLS = [
     check_disk,
     check_processes,
     check_logs,
+    check_network,
+    check_service_status,
+    check_docker_containers,
+    check_recent_changes,
 ]
-
-# Full list (for reference - can cause context overflow if all used):
-# CREWAI_ALL_TOOLS = [
-#     check_cpu_usage, check_memory, check_disk, check_processes,
-#     check_logs, check_network, check_service_status,
-#     check_docker_containers, check_system_overview, check_recent_changes,
-# ]
