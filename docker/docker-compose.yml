@@ -29,6 +29,10 @@ services:
       - SIRIUS_CONFIG_PATH=/app/config/config.yaml
       # Environment
       - SIRIUS_NVIDIA_ENVIRONMENT=${NVIDIA_ENVIRONMENT:-development}
+      # SSH Configuration
+      - SSH_KEY_PATH=${SSH_KEY_PATH:-/home/agent/.ssh/id_rsa}
+      - SSH_USERNAME=${SSH_USERNAME:-ec2-user}
+      - SSH_KNOWN_HOSTS=${SSH_KNOWN_HOSTS:-/home/agent/.ssh/known_hosts}
     networks:
       - sirius-net
     depends_on:

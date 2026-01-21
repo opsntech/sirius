@@ -232,6 +232,19 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
     if slack_bot_token:
         settings.approval.slack_bot_token = slack_bot_token
 
+    # Override SSH settings from environment
+    ssh_key_path = os.environ.get("SSH_KEY_PATH", "")
+    if ssh_key_path:
+        settings.ssh.private_key_path = ssh_key_path
+
+    ssh_username = os.environ.get("SSH_USERNAME", "")
+    if ssh_username:
+        settings.ssh.username = ssh_username
+
+    ssh_known_hosts = os.environ.get("SSH_KNOWN_HOSTS", "")
+    if ssh_known_hosts:
+        settings.ssh.known_hosts_path = ssh_known_hosts
+
     return settings
 
 

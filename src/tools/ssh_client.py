@@ -72,15 +72,20 @@ class SSHClient:
             )
 
             try:
+                # Try to connect with known_hosts verification first
+                known_hosts_path = Path(self._config.known_hosts_path).expanduser()
+                known_hosts = str(known_hosts_path) if known_hosts_path.exists() else None
+
                 conn = await asyncssh.connect(
                     host=host,
                     port=port,
                     username=self._config.username,
                     client_keys=[str(self.private_key_path)],
-                    known_hosts=str(Path(self._config.known_hosts_path).expanduser()),
+                    known_hosts=known_hosts,  # None disables host key verification
                     connect_timeout=self._config.timeout_seconds,
                 )
                 self._connections[key] = conn
+                logger.info("SSH connection established", host=host, port=port)
                 return conn
 
             except asyncssh.DisconnectError as e:

@@ -33,10 +33,10 @@ processing:
 
 # SSH Configuration
 ssh:
-  private_key_path: ~/.ssh/sirius
-  username: sirius
+  private_key_path: ${SSH_KEY_PATH:-/home/agent/.ssh/id_rsa}
+  username: ${SSH_USERNAME:-ec2-user}
   timeout_seconds: 30
-  known_hosts_path: ~/.ssh/known_hosts
+  known_hosts_path: ${SSH_KNOWN_HOSTS:-/home/agent/.ssh/known_hosts}
   port: 22
 
 # Approval Settings

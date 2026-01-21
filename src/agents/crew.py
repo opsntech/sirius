@@ -13,6 +13,7 @@ from src.models.incident import Incident, IncidentStatus, InvestigationStep, Rem
 from src.prompts.triage_prompt import TRIAGE_SYSTEM_PROMPT, format_triage_prompt
 from src.prompts.analysis_prompt import ANALYSIS_SYSTEM_PROMPT, format_analysis_prompt
 from src.prompts.remediation_prompt import REMEDIATION_SYSTEM_PROMPT, format_remediation_prompt
+from src.tools.crewai_tools import CREWAI_INVESTIGATION_TOOLS
 
 
 logger = structlog.get_logger()
@@ -60,13 +61,13 @@ class DevOpsCrew:
             allow_delegation=False,
         )
 
-        # Analysis Agent - Analyzes incidents based on alert data
-        # Note: SSH tools temporarily disabled - will be re-enabled with crewai tool format
+        # Analysis Agent - Investigates via SSH tools
         analysis_agent = Agent(
             role="Senior SRE Analyst",
-            goal="Investigate root cause by analyzing alert data, metrics patterns, and system behavior",
+            goal="Investigate root cause by SSHing into affected servers and running diagnostic commands",
             backstory=ANALYSIS_SYSTEM_PROMPT,
             llm=self._llm,
+            tools=CREWAI_INVESTIGATION_TOOLS,
             verbose=True,
             allow_delegation=False,
         )
