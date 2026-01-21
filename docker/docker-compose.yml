@@ -33,6 +33,20 @@ services:
       - SSH_KEY_PATH=${SSH_KEY_PATH:-/home/agent/.ssh/id_rsa}
       - SSH_USERNAME=${SSH_USERNAME:-ec2-user}
       - SSH_KNOWN_HOSTS=${SSH_KNOWN_HOSTS:-/home/agent/.ssh/known_hosts}
+    # Hostname resolution for monitored servers
+    extra_hosts:
+      - "dev-app-3:10.2.4.5"
+      - "dev-app-6:10.2.6.96"
+      - "qa-app-9:10.1.11.193"
+      - "qa-app-3:10.1.12.180"
+      - "qa-maxwell:10.1.13.131"
+      - "qa-pmongo-m1:10.1.12.100"
+      - "ops-graylog:10.3.35.50"
+      - "dev-mongo-test:10.2.7.208"
+      - "dev-ph-mongo:10.2.7.57"
+      - "dev-log:10.2.8.146"
+      - "dev-payroll-mongo:10.2.8.78"
+      - "ops-jenkins-slave-automation:10.3.75.25"
     networks:
       - sirius-net
     depends_on:
