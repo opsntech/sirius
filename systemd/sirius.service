@@ -1,0 +1,41 @@
+[Unit]
+Description=Sirius AI DevOps Agent
+Documentation=https://github.com/opsntech/sirius
+After=network.target
+
+[Service]
+Type=simple
+User=sirius
+Group=sirius
+WorkingDirectory=/opt/sirius
+
+# Environment
+Environment="PATH=/opt/sirius/venv/bin"
+Environment="PYTHONPATH=/opt/sirius"
+EnvironmentFile=-/etc/sirius/env
+
+# Start command
+ExecStart=/opt/sirius/venv/bin/python -m src.main
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sirius
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/log/sirius
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

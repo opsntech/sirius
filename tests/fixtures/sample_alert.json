@@ -1,0 +1,37 @@
+{
+  "receiver": "devops-agent",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "HighCPUUsage",
+        "severity": "critical",
+        "instance": "web-server-1.example.com:9100",
+        "job": "node",
+        "team": "platform",
+        "environment": "production"
+      },
+      "annotations": {
+        "summary": "CPU usage > 90% for 5 minutes",
+        "description": "Server web-server-1.example.com has CPU usage at 95% for the last 5 minutes. This may cause service degradation.",
+        "runbook_url": "https://wiki.example.com/runbooks/high-cpu"
+      },
+      "startsAt": "2024-01-15T10:30:00Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "http://prometheus:9090/graph?g0.expr=...",
+      "fingerprint": "abc123def456"
+    }
+  ],
+  "groupLabels": {
+    "alertname": "HighCPUUsage"
+  },
+  "commonLabels": {
+    "severity": "critical",
+    "environment": "production"
+  },
+  "commonAnnotations": {},
+  "externalURL": "http://alertmanager:9093",
+  "version": "4",
+  "groupKey": "{}:{alertname=\"HighCPUUsage\"}"
+}

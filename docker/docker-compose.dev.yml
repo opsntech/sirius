@@ -1,0 +1,42 @@
+# Sirius - AI DevOps Agent - Development Docker Compose
+# Use with: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+version: '3.8'
+
+services:
+  sirius:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        - INSTALL_DEV_DEPS=true
+    volumes:
+      # Mount source for live reload
+      - ../src:/app/src:ro
+      - ../config:/app/config:ro
+    environment:
+      - SIRIUS_NVIDIA_ENVIRONMENT=development
+      - LOG_LEVEL=DEBUG
+    command: ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+
+  # Prometheus for testing
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: sirius-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - sirius-net
+
+  # AlertManager for testing
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: sirius-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - sirius-net

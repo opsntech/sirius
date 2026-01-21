@@ -1,0 +1,69 @@
+# Sirius - AI DevOps Agent Configuration
+# Environment variables can override any setting using SIRIUS_ prefix
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  workers: 4
+
+# NVIDIA NIM Configuration
+nvidia:
+  environment: development  # development | production
+
+  development:
+    base_url: https://integrate.api.nvidia.com/v1
+    model: meta/llama-3.1-70b-instruct
+    api_key: ${NVIDIA_API_KEY}  # Set via environment variable
+    timeout: 60
+    max_tokens: 4096
+    temperature: 0.3
+
+  production:
+    base_url: http://localhost:8000/v1  # Self-hosted NIM
+    model: meta/llama-3.1-70b-instruct
+    timeout: 60
+    max_tokens: 4096
+    temperature: 0.3
+
+# Alert Processing
+processing:
+  dedup_window_seconds: 300      # 5 minutes
+  correlation_window_seconds: 600  # 10 minutes
+  max_queue_size: 1000
+
+# SSH Configuration
+ssh:
+  private_key_path: ~/.ssh/sirius
+  username: sirius
+  timeout_seconds: 30
+  known_hosts_path: ~/.ssh/known_hosts
+  port: 22
+
+# Approval Settings
+approval:
+  auto_approve_risk_levels:
+    - low
+  require_approval_risk_levels:
+    - medium
+    - high
+    - critical
+  slack_webhook_url: ${SLACK_WEBHOOK_URL}
+  slack_bot_token: ${SLACK_BOT_TOKEN}
+  slack_channel: "#oncall-approvals"
+  approval_timeout_minutes: 5
+  escalation_timeout_minutes: 10
+
+# Server Inventory
+inventory:
+  type: file
+  path: config/servers.yaml
+
+# Redis (optional - for state persistence)
+redis:
+  url: redis://localhost:6379/0
+
+# Logging
+logging:
+  level: INFO
+  format: json
+  audit_log_path: /var/log/sirius/audit.log

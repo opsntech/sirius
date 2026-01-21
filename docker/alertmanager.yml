@@ -1,0 +1,24 @@
+# AlertManager configuration for development/testing
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: sirius
+  group_by: ['alertname', 'instance']
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 5m
+
+receivers:
+  - name: sirius
+    webhook_configs:
+      - url: 'http://sirius:8080/webhooks/prometheus'
+        send_resolved: true
+
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'instance']

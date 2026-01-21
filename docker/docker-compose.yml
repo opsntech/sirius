@@ -1,0 +1,84 @@
+# Sirius - AI DevOps Agent - Docker Compose
+
+version: '3.8'
+
+services:
+  # Main Sirius Agent
+  sirius:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: sirius
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # Configuration (read-only)
+      - ../config:/app/config:ro
+      # Logs
+      - sirius-logs:/var/log/sirius
+      # SSH keys for server access (read-only)
+      - ${HOME}/.ssh:/home/agent/.ssh:ro
+    environment:
+      # NVIDIA NIM API
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+      # Slack integration
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      # Config path
+      - SIRIUS_CONFIG_PATH=/app/config/config.yaml
+      # Environment
+      - SIRIUS_NVIDIA_ENVIRONMENT=${NVIDIA_ENVIRONMENT:-development}
+    networks:
+      - sirius-net
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Redis for state management and deduplication
+  redis:
+    image: redis:7-alpine
+    container_name: sirius-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    networks:
+      - sirius-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Optional: Self-hosted NVIDIA NIM (production)
+  # Uncomment to enable GPU-accelerated inference
+  # nvidia-nim:
+  #   image: nvcr.io/nim/meta/llama-3.1-70b-instruct:latest
+  #   container_name: nvidia-nim
+  #   runtime: nvidia
+  #   environment:
+  #     - NGC_API_KEY=${NGC_API_KEY}
+  #   ports:
+  #     - "8000:8000"
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 2
+  #             capabilities: [gpu]
+  #   networks:
+  #     - sirius-net
+
+networks:
+  sirius-net:
+    driver: bridge
+
+volumes:
+  sirius-logs:
+  redis-data:

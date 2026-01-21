@@ -1,0 +1,98 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Docs (proprietary research and design documents)
+docs/
+
+# Local configuration (contains secrets)
+config/config.local.yaml
+config/*.local.yaml
+.env
+.env.*
+*.env
+
+# SSH keys
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Logs
+*.log
+logs/
+/var/log/
+
+# Database
+*.db
+*.sqlite3
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets and credentials
+secrets/
+credentials/
+*.secret
+*credentials*
+*api_key*
+
+# Docker volumes and local overrides
+docker/data/
+docker/*.local.yml
+
+# Audit logs (sensitive)
+audit/
+audit.log
+
+# Redis dump
+dump.rdb
+
+# Jupyter
+.ipynb_checkpoints/
+
+# mypy
+.mypy_cache/

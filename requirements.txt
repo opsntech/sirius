@@ -1,0 +1,47 @@
+# DevOps On-Call Agent Dependencies
+
+# Web framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# NVIDIA NIM client (OpenAI-compatible)
+openai==1.12.0
+
+# AI Agent framework
+crewai==0.28.0
+langchain==0.1.6
+langchain-community==0.0.20
+langchain-openai==0.0.5
+
+# SSH and remote execution
+asyncssh==2.14.2
+paramiko==3.4.0
+
+# Slack integration
+slack-sdk==3.27.0
+slack-bolt==1.18.1
+
+# Data handling
+pyyaml==6.0.1
+python-dotenv==1.0.1
+
+# State management (optional)
+redis==5.0.1
+
+# Async utilities
+aiohttp==3.9.1
+httpx==0.26.0
+
+# Logging and monitoring
+structlog==24.1.0
+python-json-logger==2.0.7
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0
+
+# Type checking
+mypy==1.8.0
