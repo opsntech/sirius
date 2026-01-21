@@ -82,237 +82,168 @@ async def send_slack_notification(
     webhook_url: str,
     execution_record: Optional[ExecutionRecord] = None,
     all_execution_records: Optional[list[ExecutionRecord]] = None,
+    stage: str = "complete",
 ) -> bool:
-    """Send a Slack notification for an incident with analysis and execution results.
+    """Send a clean Slack notification for an incident.
 
     Args:
         incident: The incident to notify about
         webhook_url: Slack webhook URL
-        execution_record: The last/primary execution record (for header status)
-        all_execution_records: All execution records if multiple actions were executed
+        execution_record: The last/primary execution record
+        all_execution_records: All execution records if multiple actions executed
+        stage: Current stage - "analyzing", "remediating", "complete", "failed"
     """
     primary_alert = incident.primary_alert
+    if not primary_alert:
+        return False
 
-    # Severity emoji
-    severity_emoji = {
-        "critical": ":red_circle:",
-        "high": ":large_orange_circle:",
-        "medium": ":large_yellow_circle:",
-        "low": ":large_green_circle:",
-        "info": ":large_blue_circle:",
-    }.get(incident.severity.value, ":white_circle:")
+    # Severity colors and emoji
+    severity_config = {
+        "critical": (":rotating_light:", "#FF0000"),
+        "high": (":red_circle:", "#FF6B6B"),
+        "medium": (":large_orange_circle:", "#FFA500"),
+        "low": (":large_yellow_circle:", "#FFD700"),
+        "info": (":large_blue_circle:", "#4A90D9"),
+    }
+    sev_emoji, sev_color = severity_config.get(incident.severity.value, (":white_circle:", "#808080"))
 
-    # Determine header based on execution status
+    # Determine stage and header
     if execution_record:
         if execution_record.status == ExecutionStatus.SUCCESS:
-            header_text = ":white_check_mark: Sirius Remediation Complete"
-            header_emoji = ":white_check_mark:"
+            stage_emoji = ":white_check_mark:"
+            stage_text = "REMEDIATION COMPLETE"
+            stage_color = "#36a64f"
         elif execution_record.status == ExecutionStatus.FAILED:
-            header_text = ":x: Sirius Remediation Failed"
-            header_emoji = ":x:"
+            stage_emoji = ":x:"
+            stage_text = "REMEDIATION FAILED"
+            stage_color = "#FF0000"
         elif execution_record.status == ExecutionStatus.REJECTED:
-            header_text = ":no_entry: Sirius Remediation Rejected"
-            header_emoji = ":no_entry:"
-        elif execution_record.status == ExecutionStatus.PENDING:
-            header_text = ":hourglass: Sirius Awaiting Approval"
-            header_emoji = ":hourglass:"
+            stage_emoji = ":no_entry:"
+            stage_text = "REMEDIATION REJECTED"
+            stage_color = "#FF6B6B"
         else:
-            header_text = ":robot_face: Sirius AI Analysis Complete"
-            header_emoji = ":robot_face:"
+            stage_emoji = ":hourglass:"
+            stage_text = "AWAITING APPROVAL"
+            stage_color = "#FFA500"
     else:
-        header_text = ":robot_face: Sirius AI Analysis Complete"
-        header_emoji = ":robot_face:"
+        stage_emoji = ":mag:"
+        stage_text = "ANALYSIS COMPLETE"
+        stage_color = "#4A90D9"
 
-    # Build the message blocks
+    # Build clean message blocks
     blocks = [
+        # Header with stage
         {
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": header_text,
+                "text": f"{stage_emoji} Sirius: {stage_text}",
                 "emoji": True,
             },
         },
-        {
-            "type": "section",
-            "fields": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Incident ID:*\n`{incident.id}`",
-                },
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Severity:*\n{severity_emoji} {incident.severity.value.upper()}",
-                },
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Alert:*\n{primary_alert.alertname if primary_alert else 'Unknown'}",
-                },
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Server:*\n{primary_alert.host if primary_alert else 'Unknown'}",
-                },
-            ],
-        },
+        # Alert info - single row
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*Summary:*\n{primary_alert.summary if primary_alert else 'No summary available'}",
+                "text": (
+                    f"*Alert:* `{primary_alert.alertname}` {sev_emoji} *{incident.severity.value.upper()}*\n"
+                    f"*Server:* `{primary_alert.host}` | *Incident:* `{incident.id}`"
+                ),
             },
         },
         {"type": "divider"},
     ]
 
-    # Add root cause analysis (truncated for readability)
-    root_cause_text = incident.root_cause or "Analysis pending..."
-    if len(root_cause_text) > 800:
-        root_cause_text = root_cause_text[:800] + "..."
+    # Root Cause - FULL, no truncation
+    if incident.root_cause:
+        # Clean up the root cause text
+        root_cause = incident.root_cause.strip()
 
-    blocks.extend([
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": "*:mag: Root Cause Analysis:*",
-            },
-        },
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f">{root_cause_text}",
-            },
-        },
-    ])
+        # Extract key findings if it's a long analysis
+        if len(root_cause) > 1500:
+            # Try to extract the conclusion/summary
+            lines = root_cause.split('\n')
+            summary_lines = []
+            for line in lines:
+                line_lower = line.lower()
+                if any(kw in line_lower for kw in ['root cause', 'conclusion', 'finding', 'recommend', 'action', 'confidence']):
+                    summary_lines.append(line)
+            if summary_lines:
+                root_cause = '\n'.join(summary_lines[-10:])  # Last 10 relevant lines
+            else:
+                root_cause = root_cause[-1500:]  # Last 1500 chars
 
-    # Add recommended actions info (can be multiple)
-    if incident.recommended_actions:
-        blocks.append({"type": "divider"})
-
-        # Build action list with execution status
-        action_count = len(incident.recommended_actions)
-        header_text = f"*:wrench: Remediation Actions ({action_count}):*" if action_count > 1 else "*:wrench: Recommended Action:*"
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": header_text},
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*:brain: Root Cause Analysis:*\n{root_cause}",
+            },
         })
+        blocks.append({"type": "divider"})
 
-        # Show each action with its status
+    # Recommended Actions - clear list
+    if incident.recommended_actions:
+        actions_text = "*:wrench: Remediation Actions:*\n"
+
         for i, action in enumerate(incident.recommended_actions):
-            # Determine execution status for this action
-            exec_status = ""
+            # Get execution status
+            status_icon = ":black_square_button:"
             if all_execution_records and i < len(all_execution_records):
-                record = all_execution_records[i]
-                status_emoji = {
+                rec = all_execution_records[i]
+                status_icon = {
                     ExecutionStatus.SUCCESS: ":white_check_mark:",
                     ExecutionStatus.FAILED: ":x:",
                     ExecutionStatus.REJECTED: ":no_entry:",
                     ExecutionStatus.PENDING: ":hourglass:",
                     ExecutionStatus.EXECUTING: ":gear:",
-                }.get(record.status, ":question:")
-                exec_status = f" {status_emoji}"
+                }.get(rec.status, ":question:")
             elif all_execution_records and i >= len(all_execution_records):
-                exec_status = " :fast_forward: (skipped)"
+                status_icon = ":fast_forward:"
 
-            action_text = (
-                f"`{i+1}.` *{action.action_type}*{exec_status}\n"
-                f"    Risk: `{action.risk_level}` | Target: `{action.target_host}`\n"
-                f"    `{action.command[:80]}{'...' if len(action.command) > 80 else ''}`"
-            )
-            blocks.append({
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": action_text},
-            })
+            risk_badge = {"low": ":large_green_circle:", "medium": ":large_yellow_circle:", "high": ":red_circle:", "critical": ":rotating_light:"}.get(action.risk_level, "")
 
-    # Add execution results if available
-    if execution_record:
-        blocks.append({"type": "divider"})
+            actions_text += f"{status_icon} `{i+1}. {action.action_type}` {risk_badge}\n"
+            actions_text += f"     `{action.command[:100]}{'...' if len(action.command) > 100 else ''}`\n"
 
-        status_emoji = {
-            ExecutionStatus.SUCCESS: ":white_check_mark:",
-            ExecutionStatus.FAILED: ":x:",
-            ExecutionStatus.REJECTED: ":no_entry:",
-            ExecutionStatus.PENDING: ":hourglass:",
-            ExecutionStatus.EXECUTING: ":gear:",
-            ExecutionStatus.ROLLED_BACK: ":rewind:",
-        }.get(execution_record.status, ":question:")
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": actions_text},
+        })
 
+    # Execution Output - if available
+    if execution_record and execution_record.status == ExecutionStatus.SUCCESS and execution_record.output:
+        output = execution_record.output[:800] if len(execution_record.output) > 800 else execution_record.output
         blocks.append({
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*:zap: Execution Result:*\n{status_emoji} *Status:* {execution_record.status.value.upper()}",
+                "text": f"*:terminal: Execution Output:*\n```{output}```",
             },
         })
-
-        exec_fields = [
-            {
-                "type": "mrkdwn",
-                "text": f"*Approved By:*\n{execution_record.approved_by or 'N/A'}",
-            },
-        ]
-
-        if execution_record.exit_code is not None:
-            exec_fields.append({
-                "type": "mrkdwn",
-                "text": f"*Exit Code:*\n{execution_record.exit_code}",
-            })
-
-        if execution_record.execution_duration_seconds:
-            exec_fields.append({
-                "type": "mrkdwn",
-                "text": f"*Duration:*\n{execution_record.execution_duration_seconds:.1f}s",
-            })
-
+    elif execution_record and execution_record.error:
         blocks.append({
             "type": "section",
-            "fields": exec_fields,
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*:warning: Error:*\n```{execution_record.error[:500]}```",
+            },
         })
 
-        # Show output or error
-        if execution_record.status == ExecutionStatus.SUCCESS and execution_record.output:
-            output_text = execution_record.output[:500]
-            if len(execution_record.output) > 500:
-                output_text += "..."
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*Output:*\n```{output_text}```",
-                },
-            })
-        elif execution_record.error:
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*Error:*\n```{execution_record.error[:500]}```",
-                },
-            })
-
-        if execution_record.verification_result:
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*Verification:*\n{':white_check_mark:' if execution_record.verified else ':warning:'} {execution_record.verification_result}",
-                },
-            })
-
-    # Add timestamp
+    # Footer with timestamp
     blocks.append({
         "type": "context",
         "elements": [
             {
                 "type": "mrkdwn",
-                "text": f":clock1: Detected at {incident.detected_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+                "text": f"Detected: {incident.detected_at.strftime('%Y-%m-%d %H:%M:%S UTC')} | Sirius AI DevOps Agent",
             },
         ],
     })
 
     message = {
-        "text": f"Sirius: {header_text} for incident {incident.id}",
+        "text": f"Sirius {stage_text}: {primary_alert.alertname} on {primary_alert.host}",
         "blocks": blocks,
     }
 
@@ -323,7 +254,7 @@ async def send_slack_notification(
                     logger.info(
                         "Slack notification sent successfully",
                         incident_id=incident.id,
-                        execution_status=execution_record.status.value if execution_record else "analysis_only",
+                        stage=stage_text,
                     )
                     return True
                 else:
@@ -331,15 +262,10 @@ async def send_slack_notification(
                         "Failed to send Slack notification",
                         incident_id=incident.id,
                         status=response.status,
-                        response_text=await response.text(),
                     )
                     return False
     except Exception as e:
-        logger.error(
-            "Error sending Slack notification",
-            incident_id=incident.id,
-            error=str(e),
-        )
+        logger.error("Error sending Slack notification", incident_id=incident.id, error=str(e))
         return False
 
 
