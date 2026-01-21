@@ -32,11 +32,14 @@ def _run_async(coro):
         return asyncio.run(coro)
 
 
-async def _ssh_exec(host: str, command: str) -> str:
-    """Execute SSH command and return result."""
+async def _ssh_exec(host: str, command: str, max_output_chars: int = 3000) -> str:
+    """Execute SSH command and return result (truncated to prevent context overflow)."""
     try:
         client = get_ssh_client()
         result = await client.execute_simple(host, command)
+        # Truncate output to prevent context overflow in CrewAI
+        if len(result) > max_output_chars:
+            result = result[:max_output_chars] + f"\n\n... [Output truncated at {max_output_chars} chars]"
         return result
     except Exception as e:
         logger.error("SSH execution failed", host=host, error=str(e))
@@ -291,16 +294,20 @@ def check_recent_changes(host: str) -> str:
     return _run_async(_ssh_exec(host, command))
 
 
-# List of all investigation tools for CrewAI agents
+# List of essential investigation tools for CrewAI agents
+# Reduced set to prevent context overflow from too many tool calls
 CREWAI_INVESTIGATION_TOOLS = [
+    check_system_overview,  # Best first step - gives comprehensive view
     check_cpu_usage,
     check_memory,
     check_disk,
     check_processes,
     check_logs,
-    check_network,
-    check_service_status,
-    check_docker_containers,
-    check_system_overview,
-    check_recent_changes,
 ]
+
+# Full list (for reference - can cause context overflow if all used):
+# CREWAI_ALL_TOOLS = [
+#     check_cpu_usage, check_memory, check_disk, check_processes,
+#     check_logs, check_network, check_service_status,
+#     check_docker_containers, check_system_overview, check_recent_changes,
+# ]
