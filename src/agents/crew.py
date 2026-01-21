@@ -10,7 +10,6 @@ from crewai import Agent, Crew, Process, Task, LLM
 
 from src.config import Settings, get_settings
 from src.models.incident import Incident, IncidentStatus, InvestigationStep, RemediationAction
-from src.tools.server_tools import INVESTIGATION_TOOLS
 from src.prompts.triage_prompt import TRIAGE_SYSTEM_PROMPT, format_triage_prompt
 from src.prompts.analysis_prompt import ANALYSIS_SYSTEM_PROMPT, format_analysis_prompt
 from src.prompts.remediation_prompt import REMEDIATION_SYSTEM_PROMPT, format_remediation_prompt
@@ -61,12 +60,12 @@ class DevOpsCrew:
             allow_delegation=False,
         )
 
-        # Analysis Agent - Has SSH tools for investigation
+        # Analysis Agent - Analyzes incidents based on alert data
+        # Note: SSH tools temporarily disabled - will be re-enabled with crewai tool format
         analysis_agent = Agent(
             role="Senior SRE Analyst",
-            goal="Investigate root cause by examining server metrics, logs, and processes",
+            goal="Investigate root cause by analyzing alert data, metrics patterns, and system behavior",
             backstory=ANALYSIS_SYSTEM_PROMPT,
-            tools=INVESTIGATION_TOOLS,
             llm=self._llm,
             verbose=True,
             allow_delegation=False,
