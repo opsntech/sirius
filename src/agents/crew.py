@@ -128,9 +128,9 @@ class DevOpsCrew:
             # Phase 3: Remediation
             remediation_result = await self._run_remediation(incident)
 
-            # Extract recommended action
-            action = self._extract_remediation_action(remediation_result, incident)
-            if action:
+            # Extract recommended actions (can be multiple)
+            actions = self._extract_remediation_actions(remediation_result, incident)
+            for action in actions:
                 incident.add_recommended_action(action)
 
             logger.info(
@@ -233,6 +233,95 @@ class DevOpsCrew:
                 confidence = int(match.group(1)) / 100
 
         return root_cause, confidence
+
+    def _extract_remediation_actions(
+        self,
+        remediation_result: str,
+        incident: Incident,
+    ) -> list[RemediationAction]:
+        """Extract one or more remediation actions from AI response.
+
+        Parses the new ACTIONS format:
+        ACTIONS:
+        1. action_type: desc | target: host | service: svc | risk: level | command: cmd
+        2. ...
+
+        Falls back to old single-action extraction if new format not found.
+        """
+        import re
+
+        actions = []
+        primary_alert = incident.primary_alert
+        if not primary_alert:
+            return actions
+
+        # Try to find ACTIONS: section with numbered items
+        # Pattern: "1. action_type: ... | target: ... | service: ... | risk: ... | command: ..."
+        action_pattern = re.compile(
+            r'^\d+\.\s*(\w+):\s*([^|]+)\|'  # action_type: description |
+            r'\s*target:\s*([^|]+)\|'        # target: hostname |
+            r'\s*service:\s*([^|]+)\|'       # service: name |
+            r'\s*risk:\s*(\w+)\|'            # risk: level |
+            r'\s*command:\s*(.+)$',          # command: cmd
+            re.IGNORECASE | re.MULTILINE
+        )
+
+        matches = action_pattern.findall(remediation_result)
+
+        if matches:
+            # Parse each matched action
+            for match in matches:
+                action_type, description, target, service, risk, command = match
+                action_type = action_type.strip()
+                target = target.strip()
+                service = service.strip()
+                risk_level = risk.strip().lower()
+                command = command.strip()
+
+                # Determine if approval is required based on risk
+                requires_approval = risk_level in ["medium", "high", "critical"]
+
+                # Extract confidence from overall result
+                confidence = incident.root_cause_confidence
+                conf_match = re.search(r'confidence[:\s]+(\d+)%?', remediation_result.lower())
+                if conf_match:
+                    confidence = int(conf_match.group(1)) / 100
+
+                action = RemediationAction(
+                    action_type=action_type,
+                    target_host=target or primary_alert.host,
+                    target_service=service or primary_alert.job or "unknown",
+                    command=command,
+                    risk_level=risk_level,
+                    confidence=confidence,
+                    reasoning=description.strip(),
+                    requires_approval=requires_approval,
+                )
+                actions.append(action)
+
+                logger.info(
+                    "Extracted remediation action",
+                    incident_id=incident.id,
+                    action_type=action_type,
+                    risk_level=risk_level,
+                    requires_approval=requires_approval,
+                    command=command[:100],
+                )
+
+        # If no actions found in new format, fall back to old single-action extraction
+        if not actions:
+            logger.debug("New ACTIONS format not found, falling back to legacy extraction")
+            single_action = self._extract_remediation_action(remediation_result, incident)
+            if single_action:
+                actions.append(single_action)
+
+        logger.info(
+            "Total remediation actions extracted",
+            incident_id=incident.id,
+            action_count=len(actions),
+        )
+
+        return actions
 
     def _extract_remediation_action(
         self,

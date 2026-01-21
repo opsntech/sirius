@@ -81,8 +81,16 @@ async def send_slack_notification(
     incident: Incident,
     webhook_url: str,
     execution_record: Optional[ExecutionRecord] = None,
+    all_execution_records: Optional[list[ExecutionRecord]] = None,
 ) -> bool:
-    """Send a Slack notification for an incident with analysis and execution results."""
+    """Send a Slack notification for an incident with analysis and execution results.
+
+    Args:
+        incident: The incident to notify about
+        webhook_url: Slack webhook URL
+        execution_record: The last/primary execution record (for header status)
+        all_execution_records: All execution records if multiple actions were executed
+    """
     primary_alert = incident.primary_alert
 
     # Severity emoji
@@ -178,34 +186,44 @@ async def send_slack_notification(
         },
     ])
 
-    # Add recommended action info
+    # Add recommended actions info (can be multiple)
     if incident.recommended_actions:
-        action = incident.recommended_actions[0]
         blocks.append({"type": "divider"})
+
+        # Build action list with execution status
+        action_count = len(incident.recommended_actions)
+        header_text = f"*:wrench: Remediation Actions ({action_count}):*" if action_count > 1 else "*:wrench: Recommended Action:*"
         blocks.append({
             "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*:wrench: Recommended Action:*\n• *Type:* `{action.action_type}`\n• *Target:* `{action.target_host}`\n• *Command:* `{action.command}`",
-            },
+            "text": {"type": "mrkdwn", "text": header_text},
         })
-        blocks.append({
-            "type": "section",
-            "fields": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Risk Level:*\n{action.risk_level.upper()}",
-                },
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Confidence:*\n{int(action.confidence * 100)}%",
-                },
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Requires Approval:*\n{'Yes' if action.requires_approval else 'No (Auto-approved)'}",
-                },
-            ],
-        })
+
+        # Show each action with its status
+        for i, action in enumerate(incident.recommended_actions):
+            # Determine execution status for this action
+            exec_status = ""
+            if all_execution_records and i < len(all_execution_records):
+                record = all_execution_records[i]
+                status_emoji = {
+                    ExecutionStatus.SUCCESS: ":white_check_mark:",
+                    ExecutionStatus.FAILED: ":x:",
+                    ExecutionStatus.REJECTED: ":no_entry:",
+                    ExecutionStatus.PENDING: ":hourglass:",
+                    ExecutionStatus.EXECUTING: ":gear:",
+                }.get(record.status, ":question:")
+                exec_status = f" {status_emoji}"
+            elif all_execution_records and i >= len(all_execution_records):
+                exec_status = " :fast_forward: (skipped)"
+
+            action_text = (
+                f"`{i+1}.` *{action.action_type}*{exec_status}\n"
+                f"    Risk: `{action.risk_level}` | Target: `{action.target_host}`\n"
+                f"    `{action.command[:80]}{'...' if len(action.command) > 80 else ''}`"
+            )
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": action_text},
+            })
 
     # Add execution results if available
     if execution_record:
@@ -329,8 +347,12 @@ async def execute_and_notify(
     incident: Incident,
     executor: RemediationExecutor,
     webhook_url: str,
-) -> Optional[ExecutionRecord]:
-    """Execute remediation action and send notification with results."""
+) -> list[ExecutionRecord]:
+    """Execute all remediation actions sequentially and send notification with results.
+
+    Executes each action in order, stopping on first failure.
+    Returns list of all execution records.
+    """
     if not incident.recommended_actions:
         logger.info(
             "No remediation actions to execute",
@@ -338,40 +360,75 @@ async def execute_and_notify(
         )
         # Still send analysis-only notification
         await send_slack_notification(incident, webhook_url)
-        return None
+        return []
 
-    action = incident.recommended_actions[0]
+    execution_records = []
+    total_actions = len(incident.recommended_actions)
 
     logger.info(
-        "Executing remediation action",
+        "Starting remediation sequence",
         incident_id=incident.id,
-        action_type=action.action_type,
-        target=action.target_host,
-        requires_approval=action.requires_approval,
+        total_actions=total_actions,
     )
 
-    try:
-        # Execute the remediation
-        execution_record = await executor.execute(incident, action)
-
-        # Update incident status based on execution
-        if execution_record.status == ExecutionStatus.SUCCESS:
-            incident.start_mitigation(action)
-
-        # Send notification with execution results
-        await send_slack_notification(incident, webhook_url, execution_record)
-
-        return execution_record
-
-    except Exception as e:
-        logger.error(
-            "Remediation execution failed",
+    for i, action in enumerate(incident.recommended_actions):
+        logger.info(
+            f"Executing action {i+1}/{total_actions}",
             incident_id=incident.id,
-            error=str(e),
+            action_type=action.action_type,
+            target=action.target_host,
+            risk_level=action.risk_level,
+            requires_approval=action.requires_approval,
         )
-        # Send notification about the failure
-        await send_slack_notification(incident, webhook_url)
-        return None
+
+        try:
+            # Execute the remediation action
+            execution_record = await executor.execute(incident, action)
+            execution_records.append(execution_record)
+
+            # Update incident status on first successful action
+            if execution_record.status == ExecutionStatus.SUCCESS:
+                if incident.selected_action is None:
+                    incident.start_mitigation(action)
+
+                # Brief pause between actions (except for last one)
+                if i < total_actions - 1:
+                    await asyncio.sleep(2)
+            else:
+                # Stop sequence on failure
+                logger.warning(
+                    f"Action {i+1} failed, stopping remediation sequence",
+                    incident_id=incident.id,
+                    action_type=action.action_type,
+                    status=execution_record.status.value,
+                )
+                break
+
+        except Exception as e:
+            logger.error(
+                f"Action {i+1} execution error",
+                incident_id=incident.id,
+                action_type=action.action_type,
+                error=str(e),
+            )
+            break
+
+    # Log completion summary
+    successful = sum(1 for r in execution_records if r.status == ExecutionStatus.SUCCESS)
+    logger.info(
+        "Remediation sequence complete",
+        incident_id=incident.id,
+        total_actions=total_actions,
+        executed=len(execution_records),
+        successful=successful,
+    )
+
+    # Send notification with all execution results
+    # Use the last execution record for the main status display
+    last_record = execution_records[-1] if execution_records else None
+    await send_slack_notification(incident, webhook_url, last_record, execution_records)
+
+    return execution_records
 
 
 @asynccontextmanager
