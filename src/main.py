@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from src.config import get_settings, Settings
 from src.ingestion.webhook_server import router as webhook_router
 from src.processing.event_processor import EventProcessor
+from src.agents.crew import DevOpsCrew
 
 
 # Configure structured logging
@@ -67,13 +68,14 @@ def setup_logging(settings: Settings):
 
 # Global instances
 event_processor: Optional[EventProcessor] = None
+devops_crew: Optional[DevOpsCrew] = None
 logger = structlog.get_logger()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global event_processor
+    global event_processor, devops_crew
 
     settings = get_settings()
     setup_logging(settings)
@@ -86,12 +88,44 @@ async def lifespan(app: FastAPI):
         port=settings.server.port,
     )
 
+    # Initialize AI crew
+    devops_crew = DevOpsCrew(settings)
+    logger.info("AI DevOps Crew initialized", model=settings.nvidia.model)
+
     # Initialize event processor
     event_processor = EventProcessor(settings)
+
+    # Wire up AI analysis callback
+    async def analyze_incident(incident):
+        """Callback to analyze incidents with AI crew."""
+        logger.info(
+            "Starting AI analysis",
+            incident_id=incident.id,
+            alertname=incident.primary_alert.alertname if incident.primary_alert else "unknown",
+        )
+        try:
+            analyzed_incident = await devops_crew.analyze_incident(incident)
+            logger.info(
+                "AI analysis complete",
+                incident_id=incident.id,
+                root_cause=analyzed_incident.root_cause[:100] if analyzed_incident.root_cause else None,
+                actions_recommended=len(analyzed_incident.recommended_actions),
+            )
+            return analyzed_incident
+        except Exception as e:
+            logger.error(
+                "AI analysis failed",
+                incident_id=incident.id,
+                error=str(e),
+            )
+            raise
+
+    event_processor.set_analysis_callback(analyze_incident)
     await event_processor.start()
 
     # Store in app state for access from routes
     app.state.event_processor = event_processor
+    app.state.devops_crew = devops_crew
     app.state.settings = settings
 
     logger.info("DevOps On-Call Agent started successfully")
