@@ -185,7 +185,11 @@ class EventProcessor:
         # Processing state
         self._running = False
         self._process_task: Optional[asyncio.Task] = None
+        self._cleanup_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
+
+        # Cleanup settings
+        self._resolved_retention_minutes = 30  # Keep resolved incidents for 30 mins
 
         # Callbacks for when incidents need AI analysis
         self._analysis_callback = None
@@ -204,6 +208,7 @@ class EventProcessor:
         logger.info("Starting event processor")
         self._running = True
         self._process_task = asyncio.create_task(self._process_loop())
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
     async def stop(self):
         """Stop the event processor."""
@@ -213,6 +218,12 @@ class EventProcessor:
             self._process_task.cancel()
             try:
                 await self._process_task
+            except asyncio.CancelledError:
+                pass
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
             except asyncio.CancelledError:
                 pass
 
@@ -358,6 +369,56 @@ class EventProcessor:
                 await asyncio.sleep(1)
 
         logger.info("Event processor loop stopped")
+
+    async def _cleanup_loop(self):
+        """Background loop to clean up old resolved incidents."""
+        logger.info("Cleanup loop started")
+
+        while self._running:
+            try:
+                await asyncio.sleep(60)  # Run cleanup every minute
+
+                async with self._lock:
+                    now = datetime.utcnow()
+                    retention = timedelta(minutes=self._resolved_retention_minutes)
+
+                    # Find resolved incidents to remove
+                    to_remove = []
+                    for incident_id, incident in self._incidents.items():
+                        if incident.status == IncidentStatus.RESOLVED:
+                            if incident.resolved_at and (now - incident.resolved_at) > retention:
+                                to_remove.append(incident_id)
+
+                    # Remove old resolved incidents
+                    for incident_id in to_remove:
+                        incident = self._incidents.pop(incident_id, None)
+                        if incident:
+                            # Clean up alert mappings
+                            for alert in incident.alerts:
+                                self._incidents_by_alert.pop(alert.id, None)
+                            # Clean up analyzed set
+                            self._analyzed_incidents.discard(incident_id)
+
+                            logger.info(
+                                "Cleaned up resolved incident",
+                                incident_id=incident_id,
+                                resolved_at=incident.resolved_at.isoformat() if incident.resolved_at else None,
+                            )
+
+                    if to_remove:
+                        logger.info(
+                            "Cleanup complete",
+                            removed_count=len(to_remove),
+                            remaining_count=len(self._incidents),
+                        )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Error in cleanup loop", error=str(e))
+                await asyncio.sleep(60)
+
+        logger.info("Cleanup loop stopped")
 
     def get_active_incidents(self) -> List[Incident]:
         """Get all active (non-resolved) incidents."""

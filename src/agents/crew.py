@@ -240,23 +240,107 @@ class DevOpsCrew:
         incident: Incident,
     ) -> Optional[RemediationAction]:
         """Extract remediation action from result."""
-        # Simple extraction - in production, use structured output
-        # For now, create a basic action based on the result
+        import re
 
         primary_alert = incident.primary_alert
         if not primary_alert:
             return None
 
-        # Default to restart_service for most alerts
+        alertname = primary_alert.alertname.lower()
+        result_lower = remediation_result.lower()
+
+        # Determine action type based on alert and AI response
+        action_type = "investigate"
+        command = "echo 'Manual investigation required'"
+        risk_level = "low"
+        requires_approval = False
+
+        # Map alert types to appropriate actions
+        if "disk" in alertname or "disk" in result_lower:
+            if "clear" in result_lower or "clean" in result_lower or "vacuum" in result_lower:
+                action_type = "clear_disk_space"
+                command = "journalctl --vacuum-size=500M && find /tmp -type f -mtime +7 -delete"
+                risk_level = "high"
+                requires_approval = True
+            else:
+                action_type = "check_disk"
+                command = "df -h && du -sh /var/log/* | sort -hr | head -10"
+                risk_level = "low"
+
+        elif "memory" in alertname or "oom" in alertname:
+            if "restart" in result_lower:
+                action_type = "restart_service"
+                service = primary_alert.job or "app"
+                command = f"systemctl restart {service}"
+                risk_level = "medium"
+                requires_approval = True
+            else:
+                action_type = "check_memory"
+                command = "free -h && ps aux --sort=-%mem | head -10"
+                risk_level = "low"
+
+        elif "cpu" in alertname or "load" in alertname:
+            if "kill" in result_lower:
+                action_type = "investigate_processes"
+                command = "ps aux --sort=-%cpu | head -20"
+                risk_level = "low"
+            elif "restart" in result_lower:
+                action_type = "restart_service"
+                service = primary_alert.job or "app"
+                command = f"systemctl restart {service}"
+                risk_level = "medium"
+                requires_approval = True
+            else:
+                action_type = "check_cpu"
+                command = "top -bn1 | head -20 && ps aux --sort=-%cpu | head -10"
+                risk_level = "low"
+
+        elif "service" in alertname or "unavailable" in alertname or "health" in alertname:
+            action_type = "restart_service"
+            service = primary_alert.job or "app"
+            command = f"systemctl restart {service}"
+            risk_level = "medium"
+            requires_approval = True
+
+        elif "docker" in alertname or "container" in alertname:
+            action_type = "restart_docker"
+            container = primary_alert.job or "app"
+            command = f"docker restart {container}"
+            risk_level = "medium"
+            requires_approval = True
+
+        elif "reboot" in result_lower:
+            action_type = "reboot_server"
+            command = "shutdown -r +1 'Scheduled reboot for maintenance'"
+            risk_level = "critical"
+            requires_approval = True
+
+        # Extract confidence from AI response
+        confidence = incident.root_cause_confidence
+        conf_match = re.search(r'confidence[:\s]+(\d+)%?', result_lower)
+        if conf_match:
+            confidence = int(conf_match.group(1)) / 100
+
+        # Extract risk level from AI response if mentioned
+        if "critical risk" in result_lower or "critical:" in result_lower:
+            risk_level = "critical"
+            requires_approval = True
+        elif "high risk" in result_lower or "high:" in result_lower:
+            risk_level = "high"
+            requires_approval = True
+        elif "medium risk" in result_lower:
+            risk_level = "medium"
+            requires_approval = True
+
         action = RemediationAction(
-            action_type="restart_service",
+            action_type=action_type,
             target_host=primary_alert.host,
             target_service=primary_alert.job or "unknown",
-            command=f"systemctl restart {primary_alert.job or 'app'}",
-            risk_level="medium",
-            confidence=incident.root_cause_confidence,
-            reasoning=remediation_result,
-            requires_approval=True,
+            command=command,
+            risk_level=risk_level,
+            confidence=confidence,
+            reasoning=remediation_result[:1000],  # Truncate long reasoning
+            requires_approval=requires_approval,
         )
 
         return action
