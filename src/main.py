@@ -7,6 +7,7 @@ import sys
 from contextlib import asynccontextmanager
 from typing import Optional
 
+import aiohttp
 import structlog
 import uvicorn
 from fastapi import FastAPI
@@ -15,6 +16,7 @@ from src.config import get_settings, Settings
 from src.ingestion.webhook_server import router as webhook_router
 from src.processing.event_processor import EventProcessor
 from src.agents.crew import DevOpsCrew
+from src.models.incident import Incident
 
 
 # Configure structured logging
@@ -72,6 +74,141 @@ devops_crew: Optional[DevOpsCrew] = None
 logger = structlog.get_logger()
 
 
+async def send_slack_notification(incident: Incident, webhook_url: str) -> bool:
+    """Send a Slack notification for an analyzed incident."""
+    primary_alert = incident.primary_alert
+
+    # Severity emoji
+    severity_emoji = {
+        "critical": ":red_circle:",
+        "high": ":large_orange_circle:",
+        "medium": ":large_yellow_circle:",
+        "low": ":large_green_circle:",
+        "info": ":large_blue_circle:",
+    }.get(incident.severity.value, ":white_circle:")
+
+    # Build the message blocks
+    blocks = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": ":robot_face: Sirius AI Analysis Complete",
+                "emoji": True,
+            },
+        },
+        {
+            "type": "section",
+            "fields": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Incident ID:*\n`{incident.id[:8]}...`",
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Severity:*\n{severity_emoji} {incident.severity.value.upper()}",
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Alert:*\n{primary_alert.alertname if primary_alert else 'Unknown'}",
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Server:*\n{primary_alert.host if primary_alert else 'Unknown'}",
+                },
+            ],
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Summary:*\n{primary_alert.summary if primary_alert else 'No summary available'}",
+            },
+        },
+        {
+            "type": "divider",
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*:mag: Root Cause Analysis:*",
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f">{(incident.root_cause or 'Analysis pending...')[:500]}",
+            },
+        },
+    ]
+
+    # Add recommended actions if available
+    if incident.recommended_actions:
+        action = incident.recommended_actions[0]
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*:wrench: Recommended Action:*\n`{action.action_type}` on `{action.target_host}`\nCommand: `{action.command}`",
+            },
+        })
+        blocks.append({
+            "type": "section",
+            "fields": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Risk Level:*\n{action.risk_level.upper()}",
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Confidence:*\n{int(action.confidence * 100)}%",
+                },
+            ],
+        })
+
+    blocks.append({
+        "type": "context",
+        "elements": [
+            {
+                "type": "mrkdwn",
+                "text": f":clock1: Detected at {incident.detected_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            },
+        ],
+    })
+
+    message = {
+        "text": f"Sirius AI analysis complete for incident {incident.id[:8]}",
+        "blocks": blocks,
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(webhook_url, json=message) as response:
+                if response.status == 200:
+                    logger.info(
+                        "Slack notification sent successfully",
+                        incident_id=incident.id,
+                    )
+                    return True
+                else:
+                    logger.error(
+                        "Failed to send Slack notification",
+                        incident_id=incident.id,
+                        status=response.status,
+                        response_text=await response.text(),
+                    )
+                    return False
+    except Exception as e:
+        logger.error(
+            "Error sending Slack notification",
+            incident_id=incident.id,
+            error=str(e),
+        )
+        return False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
@@ -121,6 +258,19 @@ async def lifespan(app: FastAPI):
             raise
 
     event_processor.set_analysis_callback(analyze_incident)
+
+    # Wire up Slack notification callback
+    slack_webhook_url = settings.approval.slack_webhook_url
+    if slack_webhook_url:
+        async def notify_incident(incident: Incident):
+            """Callback to send Slack notification after analysis."""
+            await send_slack_notification(incident, slack_webhook_url)
+
+        event_processor.set_notification_callback(notify_incident)
+        logger.info("Slack notification callback configured")
+    else:
+        logger.warning("Slack webhook URL not configured, notifications disabled")
+
     await event_processor.start()
 
     # Store in app state for access from routes

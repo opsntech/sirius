@@ -3,7 +3,7 @@
 import asyncio
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Callable
 import heapq
 
 import structlog
@@ -180,6 +180,7 @@ class EventProcessor:
         # Incident storage (in-memory for now)
         self._incidents: Dict[str, Incident] = {}
         self._incidents_by_alert: Dict[str, str] = {}  # alert_id -> incident_id
+        self._analyzed_incidents: Set[str] = set()  # Track analyzed incident IDs
 
         # Processing state
         self._running = False
@@ -188,10 +189,15 @@ class EventProcessor:
 
         # Callbacks for when incidents need AI analysis
         self._analysis_callback = None
+        self._notification_callback = None
 
     def set_analysis_callback(self, callback):
         """Set callback for incident analysis."""
         self._analysis_callback = callback
+
+    def set_notification_callback(self, callback):
+        """Set callback for incident notifications (e.g., Slack)."""
+        self._notification_callback = callback
 
     async def start(self):
         """Start the event processor."""
@@ -305,18 +311,45 @@ class EventProcessor:
                 # Get next incident from queue
                 incident = await self._priority_queue.pop()
 
-                if incident and self._analysis_callback:
-                    try:
-                        await self._analysis_callback(incident)
-                    except Exception as e:
-                        logger.error(
-                            "Failed to analyze incident",
+                if incident:
+                    # Skip if already analyzed
+                    if incident.id in self._analyzed_incidents:
+                        logger.debug(
+                            "Skipping already analyzed incident",
                             incident_id=incident.id,
-                            error=str(e),
                         )
+                        await asyncio.sleep(0.1)
+                        continue
+
+                    # Run AI analysis if callback is set
+                    if self._analysis_callback:
+                        try:
+                            analyzed_incident = await self._analysis_callback(incident)
+
+                            # Mark as analyzed
+                            self._analyzed_incidents.add(incident.id)
+
+                            # Send notification after analysis
+                            if self._notification_callback and analyzed_incident:
+                                try:
+                                    await self._notification_callback(analyzed_incident)
+                                except Exception as e:
+                                    logger.error(
+                                        "Failed to send notification",
+                                        incident_id=incident.id,
+                                        error=str(e),
+                                    )
+                        except Exception as e:
+                            logger.error(
+                                "Failed to analyze incident",
+                                incident_id=incident.id,
+                                error=str(e),
+                            )
+                            # Still mark as analyzed to prevent retry loop
+                            self._analyzed_incidents.add(incident.id)
 
                 # Small delay to prevent busy loop
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.5)
 
             except asyncio.CancelledError:
                 break
