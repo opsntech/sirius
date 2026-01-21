@@ -12,7 +12,7 @@ nvidia:
 
   development:
     base_url: https://integrate.api.nvidia.com/v1
-    model: qwen/qwen2.5-coder-32b-instruct
+    model: mistralai/devstral-2-123b-instruct-2512
     api_key: ${NVIDIA_API_KEY}  # Set via environment variable
     timeout: 60
     max_tokens: 4096
