@@ -95,7 +95,24 @@ class Alert:
 
     @property
     def host(self) -> str:
-        """Extract hostname from instance (removes port)."""
+        """Extract host/IP for SSH connection.
+
+        Priority:
+        1. private_IP label (actual IP address)
+        2. ip label
+        3. target label
+        4. instance label (removes port if present)
+        """
+        # Check for IP labels first
+        for ip_label in ["private_IP", "ip", "target_ip", "target"]:
+            if ip_label in self.labels and self.labels[ip_label]:
+                ip_val = self.labels[ip_label]
+                # Remove port if present
+                if ":" in ip_val:
+                    return ip_val.split(":")[0]
+                return ip_val
+
+        # Fall back to instance
         if ":" in self.instance:
             return self.instance.split(":")[0]
         return self.instance
