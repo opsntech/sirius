@@ -12,11 +12,11 @@ nvidia:
 
   development:
     base_url: https://integrate.api.nvidia.com/v1
-    model: mistralai/devstral-2-123b-instruct-2512
+    model: meta/llama-3.1-70b-instruct
     api_key: ${NVIDIA_API_KEY}  # Set via environment variable
     timeout: 60
     max_tokens: 4096
-    temperature: 0.3
+    temperature: 0.5
 
   production:
     base_url: http://localhost:8000/v1  # Self-hosted NIM
