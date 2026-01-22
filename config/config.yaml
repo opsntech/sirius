@@ -43,8 +43,8 @@ ssh:
 approval:
   auto_approve_risk_levels:
     - low
+    - medium  # Auto-approve restart_service, clear_cache, etc.
   require_approval_risk_levels:
-    - medium
     - high
     - critical
   slack_webhook_url: ${SLACK_WEBHOOK_URL}
