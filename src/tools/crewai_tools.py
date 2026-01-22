@@ -32,18 +32,18 @@ def _run_async(coro):
         return asyncio.run(coro)
 
 
-async def _ssh_exec(host: str, command: str, max_output_chars: int = 3000) -> str:
+async def _ssh_exec(host: str, command: str, max_output_chars: int = 4000) -> str:
     """Execute SSH command and return result (truncated to prevent context overflow)."""
     try:
         client = get_ssh_client()
         result = await client.execute_simple(host, command)
         # Truncate output to prevent context overflow in CrewAI
         if len(result) > max_output_chars:
-            result = result[:max_output_chars] + f"\n\n... [Output truncated at {max_output_chars} chars]"
+            result = result[:max_output_chars] + "\n...(truncated)"
         return result
     except Exception as e:
         logger.error("SSH execution failed", host=host, error=str(e))
-        return f"Error executing command on {host}: {str(e)}"
+        return f"SSH error on {host}: {str(e)}"
 
 
 @tool("Check CPU Usage")
