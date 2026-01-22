@@ -27,8 +27,8 @@ nvidia:
 
 # Alert Processing
 processing:
-  dedup_window_seconds: 300      # 5 minutes
-  correlation_window_seconds: 600  # 10 minutes
+  dedup_window_seconds: 3600     # 1 hour - alerts won't be reprocessed within this window
+  correlation_window_seconds: 3600  # 1 hour - correlate alerts to same incident
   max_queue_size: 1000
 
 # SSH Configuration

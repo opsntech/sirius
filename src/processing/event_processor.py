@@ -123,8 +123,13 @@ class Correlator:
         self._lock = asyncio.Lock()
 
     def _get_correlation_key(self, alert: Alert) -> str:
-        """Generate a correlation key for grouping alerts."""
-        # Correlate by host and alertname
+        """Generate a correlation key for grouping alerts.
+
+        Uses fingerprint if available (unique per alert rule + labels),
+        or falls back to host:alertname.
+        """
+        if alert.fingerprint:
+            return alert.fingerprint
         return f"{alert.host}:{alert.alertname}"
 
     async def find_matching_incident(
@@ -239,12 +244,14 @@ class EventProcessor:
         if alert.status == AlertStatus.RESOLVED:
             return await self._handle_resolved_alert(alert)
 
-        # Deduplicate
+        # Deduplicate - same alert firing won't be reprocessed
         if await self._deduplicator.is_duplicate(alert):
-            logger.debug(
-                "Alert deduplicated",
+            logger.info(
+                "Alert deduplicated (same firing already processed)",
                 alertname=alert.alertname,
                 instance=alert.instance,
+                fingerprint=alert.fingerprint,
+                starts_at=alert.starts_at.isoformat() if alert.starts_at else None,
             )
             return None
 

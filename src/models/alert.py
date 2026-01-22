@@ -119,8 +119,16 @@ class Alert:
 
     @property
     def dedup_key(self) -> str:
-        """Generate deduplication key."""
-        return self.fingerprint or f"{self.alertname}:{self.instance}"
+        """Generate deduplication key.
+
+        Uses fingerprint + starts_at to ensure same alert firing is deduplicated
+        even when Prometheus re-sends it (repeat_interval).
+        """
+        # Include starts_at to identify the same alert firing instance
+        starts_at_str = self.starts_at.isoformat() if self.starts_at else "unknown"
+        if self.fingerprint:
+            return f"{self.fingerprint}:{starts_at_str}"
+        return f"{self.alertname}:{self.instance}:{starts_at_str}"
 
     def to_dict(self) -> Dict:
         """Convert to dictionary for serialization."""
