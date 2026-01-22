@@ -19,7 +19,10 @@ RUN useradd -m -s /bin/bash -u 1000 agent \
     && chown -R agent:agent /var/log/sirius \
     && mkdir -p /home/agent/.ssh \
     && chown -R agent:agent /home/agent/.ssh \
-    && chmod 700 /home/agent/.ssh
+    && chmod 700 /home/agent/.ssh \
+    && mkdir -p /var/lib/sirius/memory \
+    && mkdir -p /var/lib/sirius/training_data \
+    && chown -R agent:agent /var/lib/sirius
 
 # Install Python dependencies
 COPY requirements.txt .
