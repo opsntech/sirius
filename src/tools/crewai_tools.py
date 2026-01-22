@@ -606,7 +606,7 @@ def check_jvm(host: str, process_pattern: str = "java") -> str:
         jstat -gc $PID 2>/dev/null || echo "jstat not available"
         echo ""
         echo "=== JVM Threads ==="
-        jstack $PID 2>/dev/null | grep -E "^\"" | wc -l || echo "jstack not available"
+        jstack $PID 2>/dev/null | grep -c '^"' || echo "jstack not available"
     else
         echo "No Java process found matching '{process_pattern}'"
     fi
