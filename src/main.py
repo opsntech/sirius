@@ -246,29 +246,26 @@ async def send_slack_notification(
 
     blocks.append({"type": "divider"})
 
-    # Root Cause Analysis - show full analysis with proper formatting
+    # Root Cause Analysis - show analysis with proper truncation for Slack limits
     if incident.root_cause:
         root_cause = incident.root_cause.strip()
 
-        # Format root cause for better readability
-        # Split into paragraphs and format
-        if len(root_cause) > 2500:
-            # For very long analysis, show structured summary
+        # Slack text block limit is 3000 chars - keep under 2500 for safety
+        if len(root_cause) > 2000:
+            # Extract key findings for summary
             lines = root_cause.split('\n')
-            formatted_lines = []
+            key_lines = []
             for line in lines:
                 line_stripped = line.strip()
                 if line_stripped:
-                    # Highlight key sections
                     lower = line_stripped.lower()
-                    if any(kw in lower for kw in ['root cause:', 'conclusion:', 'finding:', 'summary:', 'issue:']):
-                        formatted_lines.append(f"*{line_stripped}*")
-                    elif any(kw in lower for kw in ['recommend', 'action:', 'next step']):
-                        formatted_lines.append(f"• {line_stripped}")
-                    else:
-                        formatted_lines.append(line_stripped)
+                    if any(kw in lower for kw in ['root cause', 'conclusion', 'finding', 'summary', 'issue', 'evidence', 'fix']):
+                        key_lines.append(line_stripped)
 
-            root_cause_display = '\n'.join(formatted_lines[-30:])  # Last 30 meaningful lines
+            if key_lines:
+                root_cause_display = '\n'.join(key_lines[-15:])[:1800]
+            else:
+                root_cause_display = root_cause[-1800:]
         else:
             root_cause_display = root_cause
 
@@ -280,7 +277,7 @@ async def send_slack_notification(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*:brain: Root Cause Analysis:* (Confidence: {confidence_pct}% {confidence_bar})\n\n{root_cause_display}",
+                "text": f"*:brain: Root Cause Analysis:* (Confidence: {confidence_pct}% {confidence_bar})\n\n{root_cause_display[:2500]}",
             },
         })
         blocks.append({"type": "divider"})
@@ -329,17 +326,19 @@ async def send_slack_notification(
             # Confidence indicator
             action_confidence = int(action.confidence * 100)
 
-            # Build action block
+            # Build action block - keep under 2500 chars for Slack limit
+            cmd_display = action.command[:200] + "..." if len(action.command) > 200 else action.command
+
             action_text = f"{status_icon} *Action {i+1}: `{action.action_type}`*\n"
             action_text += f"├─ *Target:* `{action.target_host}`"
             if action.target_service:
-                action_text += f" → `{action.target_service}`"
+                action_text += f" → `{action.target_service[:50]}`"
             action_text += f"\n├─ *Risk:* {risk_badge} | *Confidence:* {action_confidence}%\n"
-            action_text += f"├─ *Command:*\n```{action.command}```\n"
+            action_text += f"├─ *Command:*\n```{cmd_display}```\n"
 
-            # Add reasoning if available
+            # Add reasoning if available (truncated)
             if action.reasoning:
-                reasoning_short = action.reasoning[:300] + "..." if len(action.reasoning) > 300 else action.reasoning
+                reasoning_short = action.reasoning[:200] + "..." if len(action.reasoning) > 200 else action.reasoning
                 action_text += f"├─ *Reasoning:* {reasoning_short}\n"
 
             # Add execution status details
@@ -442,16 +441,18 @@ async def send_slack_notification(
         "elements": [{"type": "mrkdwn", "text": footer_text}],
     })
 
+    # Slack has a 50 block limit - truncate if needed
+    if len(blocks) > 45:
+        blocks = blocks[:44]
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"_Message truncated. {len(blocks)} blocks total._"}],
+        })
+
     # Build final message
     message = {
         "text": f"Sirius {stage_text}: {primary_alert.alertname} on {primary_alert.host} ({sev_text})",
         "blocks": blocks,
-        "attachments": [
-            {
-                "color": stage_color,
-                "blocks": []
-            }
-        ]
     }
 
     try:
