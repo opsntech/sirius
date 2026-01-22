@@ -41,9 +41,9 @@ ssh:
 
 # Approval Settings
 approval:
-  auto_approve_risk_levels: []  # No auto-approval - all actions require explicit approval
+  auto_approve_risk_levels:
+    - low  # Auto-approve investigation/diagnostic tools (read-only, safe)
   require_approval_risk_levels:
-    - low
     - medium
     - high
     - critical

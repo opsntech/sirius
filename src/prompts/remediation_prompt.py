@@ -15,7 +15,7 @@ Safety Guidelines:
 - ALL actions require human approval before execution
 
 Available Remediation Actions:
-- LOW RISK: check_status, view_logs, check_logs (requires approval)
+- LOW RISK: check_status, view_logs, check_logs, investigate (auto-approved - read-only diagnostics)
 - MEDIUM RISK: restart_service, restart_docker, scale_service, clear_cache (requires approval)
 - HIGH RISK: kill_process, clear_disk_space, reset_connections (requires approval)
 - CRITICAL RISK: reboot_server, rollback_deployment (requires approval + confirmation)
@@ -51,10 +51,10 @@ Confidence: {confidence}%
 {findings}
 
 ## Available Actions
-Choose from the following remediation actions. ALL actions require approval.
+Choose from the following remediation actions.
 IMPORTANT: Replace placeholders with ACTUAL values from the incident context.
 
-### Low Risk (Requires approval)
+### Low Risk (Auto-approved - read-only diagnostics)
 - check_status: Verify current service/process status
   Example: systemctl status nginx --no-pager
   Example: docker ps --filter name=my-app

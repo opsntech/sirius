@@ -39,9 +39,9 @@ class SSHConfig(BaseModel):
 
 class ApprovalConfig(BaseModel):
     """Approval workflow configuration."""
-    auto_approve_risk_levels: List[str] = Field(default_factory=list)  # No auto-approval by default
+    auto_approve_risk_levels: List[str] = Field(default_factory=lambda: ["low"])  # Auto-approve investigation tools
     require_approval_risk_levels: List[str] = Field(
-        default_factory=lambda: ["low", "medium", "high", "critical"]  # All levels require approval
+        default_factory=lambda: ["medium", "high", "critical"]  # Remediation actions require approval
     )
     slack_webhook_url: str = ""
     slack_bot_token: str = ""
