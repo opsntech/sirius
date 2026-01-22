@@ -281,11 +281,12 @@ class DevOpsCrew:
                 # Determine if approval is required based on risk
                 requires_approval = risk_level in ["medium", "high", "critical"]
 
-                # Extract confidence from overall result
+                # Extract confidence from overall result (clamp to 0-1)
                 confidence = incident.root_cause_confidence
-                conf_match = re.search(r'confidence[:\s]+(\d+)%?', remediation_result.lower())
+                conf_match = re.search(r'confidence[:\s]*(\d+)\s*%', remediation_result.lower())
                 if conf_match:
-                    confidence = int(conf_match.group(1)) / 100
+                    conf_val = min(100, int(conf_match.group(1)))  # Clamp to 100 max
+                    confidence = conf_val / 100
 
                 action = RemediationAction(
                     action_type=action_type,
@@ -308,10 +309,10 @@ class DevOpsCrew:
                     command=command[:100],
                 )
 
-        # If no actions found in new format, fall back to old single-action extraction
+        # If no valid actions found, create safe diagnostic action based on alert type
         if not actions:
-            logger.debug("New ACTIONS format not found, falling back to legacy extraction")
-            single_action = self._extract_remediation_action(remediation_result, incident)
+            logger.info("ACTIONS format not found, creating safe diagnostic action")
+            single_action = self._create_safe_diagnostic_action(incident)
             if single_action:
                 actions.append(single_action)
 
@@ -323,156 +324,74 @@ class DevOpsCrew:
 
         return actions
 
-    def _extract_remediation_action(
+    def _create_safe_diagnostic_action(
         self,
-        remediation_result: str,
         incident: Incident,
     ) -> Optional[RemediationAction]:
-        """Extract remediation action from result.
+        """Create a safe diagnostic action based on alert type.
 
-        Risk Levels:
-        - low: Diagnostic commands (read-only) - auto-approved and executed
-        - medium: Service restarts - requires manual approval
-        - high: Data deletion, process kills - requires manual approval
-        - critical: Server reboots - requires manual approval
+        Always creates LOW RISK investigation actions that are auto-approved.
+        These gather information without making changes.
         """
-        import re
-
         primary_alert = incident.primary_alert
         if not primary_alert:
             return None
 
         alertname = primary_alert.alertname.lower()
-        result_lower = remediation_result.lower()
+        host = primary_alert.host
+        service = primary_alert.job or "system"
 
-        # Default to a diagnostic action (low risk, auto-approved)
-        action_type = "investigate"
-        command = "echo '=== System Status ===' && uptime && free -h && df -h | head -10"
-        risk_level = "low"
-        requires_approval = False
-
-        # Map alert types to appropriate actions
-        if "disk" in alertname or "disk" in result_lower:
-            if "clear" in result_lower or "clean" in result_lower or "vacuum" in result_lower or "delete" in result_lower:
-                action_type = "clear_disk_space"
-                command = "journalctl --vacuum-size=500M && find /tmp -type f -mtime +7 -delete 2>/dev/null; df -h"
-                risk_level = "high"
-                requires_approval = True
-            else:
-                # Default to diagnostic for disk alerts
-                action_type = "check_disk"
-                command = "df -h && echo '' && echo '=== Largest directories in /var/log ===' && du -sh /var/log/* 2>/dev/null | sort -hr | head -10"
-                risk_level = "low"
-                requires_approval = False
+        # Map alert types to safe diagnostic commands
+        if "disk" in alertname or "storage" in alertname:
+            action_type = "check_disk"
+            command = f"df -h && echo '' && echo '=== Largest dirs ===' && du -sh /var/log/* /tmp/* 2>/dev/null | sort -hr | head -10"
 
         elif "memory" in alertname or "oom" in alertname or "mem" in alertname:
-            if "restart" in result_lower:
-                action_type = "restart_service"
-                service = primary_alert.job or "app"
-                command = f"systemctl restart {service} && systemctl status {service}"
-                risk_level = "medium"
-                requires_approval = True
-            else:
-                # Default to diagnostic for memory alerts
-                action_type = "check_memory"
-                command = "free -h && echo '' && echo '=== Top Memory Processes ===' && ps aux --sort=-%mem | head -15"
-                risk_level = "low"
-                requires_approval = False
+            action_type = "check_memory"
+            command = "free -h && echo '' && echo '=== Top Memory Processes ===' && ps aux --sort=-%mem | head -10"
 
         elif "cpu" in alertname or "load" in alertname:
-            if "kill" in result_lower:
-                action_type = "investigate_processes"
-                command = "ps aux --sort=-%cpu | head -20 && echo '' && echo '=== Load Average ===' && cat /proc/loadavg"
-                risk_level = "low"
-                requires_approval = False
-            elif "restart" in result_lower:
-                action_type = "restart_service"
-                service = primary_alert.job or "app"
-                command = f"systemctl restart {service} && systemctl status {service}"
-                risk_level = "medium"
-                requires_approval = True
-            else:
-                # Default to diagnostic for CPU alerts
-                action_type = "check_cpu"
-                command = "uptime && echo '' && echo '=== Top CPU Processes ===' && ps aux --sort=-%cpu | head -20"
-                risk_level = "low"
-                requires_approval = False
+            action_type = "check_cpu"
+            command = "uptime && echo '' && echo '=== Top CPU Processes ===' && ps aux --sort=-%cpu | head -15"
+
+        elif "kafka" in alertname or "lag" in alertname or "consumer" in alertname:
+            action_type = "check_kafka"
+            command = "echo '=== Kafka Consumer Groups ===' && kafka-consumer-groups.sh --bootstrap-server localhost:9092 --list 2>/dev/null || echo 'kafka-consumer-groups not available'"
 
         elif "service" in alertname or "unavailable" in alertname or "health" in alertname:
-            service = primary_alert.job or "app"
-            if "restart" in result_lower:
-                action_type = "restart_service"
-                command = f"systemctl restart {service} && sleep 2 && systemctl status {service}"
-                risk_level = "medium"
-                requires_approval = True
-            else:
-                # Default to check status first
-                action_type = "check_service"
-                command = f"systemctl status {service} --no-pager && echo '' && journalctl -u {service} -n 50 --no-pager"
-                risk_level = "low"
-                requires_approval = False
+            action_type = "check_service"
+            command = f"systemctl status {service} --no-pager 2>/dev/null || echo 'Service status check' && journalctl -u {service} -n 30 --no-pager 2>/dev/null || echo 'No journald logs'"
 
         elif "docker" in alertname or "container" in alertname:
-            container = primary_alert.job or "app"
-            if "restart" in result_lower:
-                action_type = "restart_docker"
-                command = f"docker restart {container} && sleep 2 && docker ps | grep {container}"
-                risk_level = "medium"
-                requires_approval = True
-            else:
-                # Default to check container status
-                action_type = "check_docker"
-                command = f"docker ps -a && echo '' && docker logs --tail 50 {container} 2>&1"
-                risk_level = "low"
-                requires_approval = False
+            action_type = "check_docker"
+            command = "docker ps -a --format 'table {{{{.Names}}}}\\t{{{{.Status}}}}\\t{{{{.Ports}}}}' | head -20"
 
         elif "network" in alertname or "connection" in alertname:
             action_type = "check_network"
-            command = "ss -tuln && echo '' && echo '=== Connection Summary ===' && ss -s"
-            risk_level = "low"
-            requires_approval = False
+            command = "ss -tuln | head -20 && echo '' && echo '=== Connection counts ===' && ss -s"
 
-        elif "reboot" in result_lower:
-            action_type = "reboot_server"
-            command = "shutdown -r +1 'Scheduled reboot for maintenance'"
-            risk_level = "critical"
-            requires_approval = True
-
-        # Extract confidence from AI response
-        confidence = incident.root_cause_confidence
-        conf_match = re.search(r'confidence[:\s]+(\d+)%?', result_lower)
-        if conf_match:
-            confidence = int(conf_match.group(1)) / 100
-
-        # Override risk level if explicitly mentioned in AI response
-        if "critical risk" in result_lower or "risk: critical" in result_lower:
-            risk_level = "critical"
-            requires_approval = True
-        elif "high risk" in result_lower or "risk: high" in result_lower:
-            risk_level = "high"
-            requires_approval = True
-        elif "medium risk" in result_lower or "risk: medium" in result_lower:
-            risk_level = "medium"
-            requires_approval = True
+        else:
+            # Generic system overview for any other alert
+            action_type = "check_system"
+            command = "uptime && echo '' && free -h && echo '' && df -h | head -5 && echo '' && ps aux --sort=-%cpu | head -10"
 
         action = RemediationAction(
             action_type=action_type,
-            target_host=primary_alert.host,
-            target_service=primary_alert.job or "unknown",
+            target_host=host,
+            target_service=service,
             command=command,
-            risk_level=risk_level,
-            confidence=confidence,
-            reasoning=remediation_result[:1000],  # Truncate long reasoning
-            requires_approval=requires_approval,
+            risk_level="low",
+            confidence=incident.root_cause_confidence,
+            reasoning=f"Safe diagnostic check for {alertname} alert on {host}",
+            requires_approval=False,  # Low risk = auto-approved
         )
 
         logger.info(
-            "Extracted remediation action",
+            "Created safe diagnostic action",
             incident_id=incident.id,
             action_type=action_type,
-            risk_level=risk_level,
-            requires_approval=requires_approval,
-            command=command[:100],
+            target=host,
+            risk_level="low",
         )
 
         return action
