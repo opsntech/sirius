@@ -380,10 +380,8 @@ class ApprovalManager:
     Determines whether actions need approval and handles the
     approval process via Slack or other channels.
 
-    Note: Currently, interactive Slack approval is not fully implemented
-    (requires Slack app with interaction endpoints). For now:
-    - Low risk: Auto-approved and executed
-    - Medium/High/Critical: Rejected with notification (requires manual intervention)
+    All actions require explicit human approval before execution.
+    No auto-approval is performed regardless of risk level.
     """
 
     def __init__(self, settings: Optional[Settings] = None):
@@ -392,16 +390,18 @@ class ApprovalManager:
         self._slack_bot = SlackApprovalBot(self._config)
 
     def requires_approval(self, action: RemediationAction) -> bool:
-        """Check if an action requires human approval."""
+        """Check if an action requires human approval.
+
+        By default, ALL actions require approval. This can be configured
+        via auto_approve_risk_levels in config, but the default is empty.
+        """
         risk = action.risk_level.lower()
 
+        # Check if this risk level is in auto-approve list (default: empty)
         if risk in self._config.auto_approve_risk_levels:
             return False
 
-        if risk in self._config.require_approval_risk_levels:
-            return True
-
-        # Default to requiring approval for unknown risk levels
+        # All other actions require approval
         return True
 
     async def request_approval(
@@ -413,11 +413,9 @@ class ApprovalManager:
         """
         Request approval for a remediation action.
 
-        For low-risk actions: Auto-approve immediately.
-        For higher-risk actions: Reject with a message indicating manual intervention needed.
-
-        Note: Full interactive Slack approval would require a Slack app with
-        interaction endpoints. For now, we auto-approve low risk and reject others.
+        All actions require explicit human approval before execution.
+        The Slack notification will contain all details needed for
+        manual review and execution.
 
         Args:
             incident: The incident requiring remediation
@@ -429,9 +427,10 @@ class ApprovalManager:
         """
         risk = action.risk_level.lower()
 
+        # Check if auto-approval is configured (default: disabled)
         if not self.requires_approval(action):
             logger.info(
-                "Action auto-approved",
+                "Action auto-approved (configured)",
                 incident_id=incident.id,
                 action_type=action.action_type,
                 risk_level=risk,
@@ -439,26 +438,42 @@ class ApprovalManager:
             return ApprovalResult(
                 approved=True,
                 approved_by="auto",
-                reason=f"Auto-approved: {risk} risk action",
+                reason=f"Auto-approved: {risk} risk action (per configuration)",
             )
 
-        # For higher risk actions, we don't execute automatically
-        # The notification will include the recommended action for manual review
+        # All actions require manual approval
         logger.info(
-            "Action requires manual approval - not auto-executing",
+            "Action requires manual approval",
             incident_id=incident.id,
             action_type=action.action_type,
             risk_level=risk,
+            target_host=action.target_host,
+            target_service=action.target_service,
+            command=action.command[:100],
         )
 
         # Mark that approval was requested (for audit trail)
-        execution_record.request_approval("slack_notification", "pending_manual")
+        execution_record.request_approval("slack_notification", "awaiting_approval")
+
+        # Build detailed approval reason with all necessary information
+        approval_details = [
+            f"Action: {action.action_type}",
+            f"Risk Level: {risk.upper()}",
+            f"Target: {action.target_host}",
+        ]
+        if action.target_service:
+            approval_details.append(f"Service: {action.target_service}")
+        approval_details.append(f"Confidence: {int(action.confidence * 100)}%")
 
         return ApprovalResult(
             approved=False,
             approved_by=None,
-            reason=f"Manual approval required for {risk} risk action. "
-                   f"Review the recommendation and execute manually if appropriate: {action.command}",
+            reason=(
+                f"Manual approval required for {risk.upper()} risk action.\n"
+                f"• {chr(10).join(approval_details)}\n"
+                f"• Command: {action.command}\n\n"
+                f"Review the Slack notification and execute manually if appropriate."
+            ),
         )
 
 

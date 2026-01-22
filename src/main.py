@@ -5,6 +5,7 @@ import logging
 import signal
 import sys
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Optional
 
 import aiohttp
@@ -77,6 +78,27 @@ remediation_executor: Optional[RemediationExecutor] = None
 logger = structlog.get_logger()
 
 
+def _format_duration(seconds: float) -> str:
+    """Format duration in human-readable format."""
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    elif seconds < 3600:
+        mins = int(seconds / 60)
+        secs = int(seconds % 60)
+        return f"{mins}m {secs}s"
+    else:
+        hours = int(seconds / 3600)
+        mins = int((seconds % 3600) / 60)
+        return f"{hours}h {mins}m"
+
+
+def _get_incident_age(incident: Incident) -> str:
+    """Get incident age as human-readable string."""
+    now = datetime.utcnow()
+    delta = (now - incident.detected_at).total_seconds()
+    return _format_duration(delta)
+
+
 async def send_slack_notification(
     incident: Incident,
     webhook_url: str,
@@ -84,31 +106,59 @@ async def send_slack_notification(
     all_execution_records: Optional[list[ExecutionRecord]] = None,
     stage: str = "complete",
 ) -> bool:
-    """Send a clean Slack notification for an incident.
+    """Send a comprehensive Slack notification for an incident.
 
     Args:
         incident: The incident to notify about
         webhook_url: Slack webhook URL
         execution_record: The last/primary execution record
         all_execution_records: All execution records if multiple actions executed
-        stage: Current stage - "analyzing", "remediating", "complete", "failed"
+        stage: Current stage - "analyzing", "awaiting_approval", "complete", "failed"
     """
     primary_alert = incident.primary_alert
     if not primary_alert:
         return False
 
-    # Severity colors and emoji
+    # Severity configuration
     severity_config = {
-        "critical": (":rotating_light:", "#FF0000"),
-        "high": (":red_circle:", "#FF6B6B"),
-        "medium": (":large_orange_circle:", "#FFA500"),
-        "low": (":large_yellow_circle:", "#FFD700"),
-        "info": (":large_blue_circle:", "#4A90D9"),
+        "critical": (":rotating_light:", "#FF0000", "CRITICAL"),
+        "high": (":red_circle:", "#FF6B6B", "HIGH"),
+        "medium": (":large_orange_circle:", "#FFA500", "MEDIUM"),
+        "low": (":large_yellow_circle:", "#FFD700", "LOW"),
+        "info": (":large_blue_circle:", "#4A90D9", "INFO"),
     }
-    sev_emoji, sev_color = severity_config.get(incident.severity.value, (":white_circle:", "#808080"))
+    sev_emoji, sev_color, sev_text = severity_config.get(
+        incident.severity.value, (":white_circle:", "#808080", "UNKNOWN")
+    )
 
-    # Determine stage and header
-    if execution_record:
+    # Determine stage and header based on execution status
+    if all_execution_records:
+        # Check if any action was rejected (awaiting approval)
+        rejected_count = sum(1 for r in all_execution_records if r.status == ExecutionStatus.REJECTED)
+        success_count = sum(1 for r in all_execution_records if r.status == ExecutionStatus.SUCCESS)
+        failed_count = sum(1 for r in all_execution_records if r.status == ExecutionStatus.FAILED)
+
+        if rejected_count > 0 and success_count == 0 and failed_count == 0:
+            stage_emoji = ":raised_hand:"
+            stage_text = "AWAITING APPROVAL"
+            stage_color = "#FFA500"
+        elif failed_count > 0:
+            stage_emoji = ":x:"
+            stage_text = "REMEDIATION FAILED"
+            stage_color = "#FF0000"
+        elif success_count > 0 and success_count == len(incident.recommended_actions):
+            stage_emoji = ":white_check_mark:"
+            stage_text = "REMEDIATION COMPLETE"
+            stage_color = "#36a64f"
+        elif success_count > 0:
+            stage_emoji = ":hourglass_flowing_sand:"
+            stage_text = "REMEDIATION IN PROGRESS"
+            stage_color = "#4A90D9"
+        else:
+            stage_emoji = ":raised_hand:"
+            stage_text = "AWAITING APPROVAL"
+            stage_color = "#FFA500"
+    elif execution_record:
         if execution_record.status == ExecutionStatus.SUCCESS:
             stage_emoji = ":white_check_mark:"
             stage_text = "REMEDIATION COMPLETE"
@@ -118,19 +168,28 @@ async def send_slack_notification(
             stage_text = "REMEDIATION FAILED"
             stage_color = "#FF0000"
         elif execution_record.status == ExecutionStatus.REJECTED:
-            stage_emoji = ":no_entry:"
-            stage_text = "REMEDIATION REJECTED"
-            stage_color = "#FF6B6B"
-        else:
-            stage_emoji = ":hourglass:"
+            stage_emoji = ":raised_hand:"
             stage_text = "AWAITING APPROVAL"
             stage_color = "#FFA500"
+        else:
+            stage_emoji = ":hourglass:"
+            stage_text = "PROCESSING"
+            stage_color = "#4A90D9"
     else:
         stage_emoji = ":mag:"
         stage_text = "ANALYSIS COMPLETE"
         stage_color = "#4A90D9"
 
-    # Build clean message blocks
+    # Get service info
+    service_name = primary_alert.job or (incident.affected_services[0] if incident.affected_services else "N/A")
+
+    # Get environment from labels
+    environment = primary_alert.labels.get("environment", primary_alert.labels.get("env", "N/A"))
+
+    # Calculate incident age
+    incident_age = _get_incident_age(incident)
+
+    # Build message blocks
     blocks = [
         # Header with stage
         {
@@ -141,110 +200,258 @@ async def send_slack_notification(
                 "emoji": True,
             },
         },
-        # Alert info - single row
+        # Alert summary section
         {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*:bell: Alert:*\n`{primary_alert.alertname}`"},
+                {"type": "mrkdwn", "text": f"*{sev_emoji} Severity:*\n*{sev_text}*"},
+                {"type": "mrkdwn", "text": f"*:computer: Server:*\n`{primary_alert.host}`"},
+                {"type": "mrkdwn", "text": f"*:gear: Service:*\n`{service_name}`"},
+            ],
+        },
+        # Additional context
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*:ticket: Incident:*\n`{incident.id}`"},
+                {"type": "mrkdwn", "text": f"*:earth_americas: Environment:*\n`{environment}`"},
+                {"type": "mrkdwn", "text": f"*:stopwatch: Age:*\n`{incident_age}`"},
+                {"type": "mrkdwn", "text": f"*:bar_chart: Status:*\n`{incident.status.value.upper()}`"},
+            ],
+        },
+    ]
+
+    # Alert description/summary if available
+    if primary_alert.summary or primary_alert.description:
+        alert_detail = primary_alert.summary or primary_alert.description
+        blocks.append({"type": "divider"})
+        blocks.append({
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": (
-                    f"*Alert:* `{primary_alert.alertname}` {sev_emoji} *{incident.severity.value.upper()}*\n"
-                    f"*Server:* `{primary_alert.host}` | *Incident:* `{incident.id}`"
-                ),
+                "text": f"*:page_facing_up: Alert Summary:*\n>{alert_detail[:500]}{'...' if len(alert_detail) > 500 else ''}",
             },
-        },
-        {"type": "divider"},
-    ]
+        })
 
-    # Root Cause - FULL, no truncation
+    # Runbook link if available
+    if primary_alert.runbook_url:
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*:book: Runbook:* <{primary_alert.runbook_url}|View Runbook>",
+            },
+        })
+
+    blocks.append({"type": "divider"})
+
+    # Root Cause Analysis - show full analysis with proper formatting
     if incident.root_cause:
-        # Clean up the root cause text
         root_cause = incident.root_cause.strip()
 
-        # Extract key findings if it's a long analysis
-        if len(root_cause) > 1500:
-            # Try to extract the conclusion/summary
+        # Format root cause for better readability
+        # Split into paragraphs and format
+        if len(root_cause) > 2500:
+            # For very long analysis, show structured summary
             lines = root_cause.split('\n')
-            summary_lines = []
+            formatted_lines = []
             for line in lines:
-                line_lower = line.lower()
-                if any(kw in line_lower for kw in ['root cause', 'conclusion', 'finding', 'recommend', 'action', 'confidence']):
-                    summary_lines.append(line)
-            if summary_lines:
-                root_cause = '\n'.join(summary_lines[-10:])  # Last 10 relevant lines
-            else:
-                root_cause = root_cause[-1500:]  # Last 1500 chars
+                line_stripped = line.strip()
+                if line_stripped:
+                    # Highlight key sections
+                    lower = line_stripped.lower()
+                    if any(kw in lower for kw in ['root cause:', 'conclusion:', 'finding:', 'summary:', 'issue:']):
+                        formatted_lines.append(f"*{line_stripped}*")
+                    elif any(kw in lower for kw in ['recommend', 'action:', 'next step']):
+                        formatted_lines.append(f"• {line_stripped}")
+                    else:
+                        formatted_lines.append(line_stripped)
+
+            root_cause_display = '\n'.join(formatted_lines[-30:])  # Last 30 meaningful lines
+        else:
+            root_cause_display = root_cause
+
+        # Add confidence indicator
+        confidence_pct = int(incident.root_cause_confidence * 100)
+        confidence_bar = "█" * (confidence_pct // 10) + "░" * (10 - confidence_pct // 10)
 
         blocks.append({
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*:brain: Root Cause Analysis:*\n{root_cause}",
+                "text": f"*:brain: Root Cause Analysis:* (Confidence: {confidence_pct}% {confidence_bar})\n\n{root_cause_display}",
             },
         })
         blocks.append({"type": "divider"})
 
-    # Recommended Actions - clear list
+    # Recommended Actions - comprehensive details
     if incident.recommended_actions:
-        actions_text = "*:wrench: Remediation Actions:*\n"
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*:wrench: Recommended Remediation Actions* ({len(incident.recommended_actions)} action{'s' if len(incident.recommended_actions) > 1 else ''})",
+            },
+        })
 
         for i, action in enumerate(incident.recommended_actions):
-            # Get execution status
-            status_icon = ":black_square_button:"
+            # Get execution status for this action
+            exec_status = None
+            exec_output = None
+            exec_error = None
             if all_execution_records and i < len(all_execution_records):
                 rec = all_execution_records[i]
-                status_icon = {
-                    ExecutionStatus.SUCCESS: ":white_check_mark:",
-                    ExecutionStatus.FAILED: ":x:",
-                    ExecutionStatus.REJECTED: ":no_entry:",
-                    ExecutionStatus.PENDING: ":hourglass:",
-                    ExecutionStatus.EXECUTING: ":gear:",
-                }.get(rec.status, ":question:")
-            elif all_execution_records and i >= len(all_execution_records):
-                status_icon = ":fast_forward:"
+                exec_status = rec.status
+                exec_output = rec.output
+                exec_error = rec.error
 
-            risk_badge = {"low": ":large_green_circle:", "medium": ":large_yellow_circle:", "high": ":red_circle:", "critical": ":rotating_light:"}.get(action.risk_level, "")
+            # Status icon based on execution state
+            status_icons = {
+                ExecutionStatus.SUCCESS: ":white_check_mark:",
+                ExecutionStatus.FAILED: ":x:",
+                ExecutionStatus.REJECTED: ":raised_hand:",
+                ExecutionStatus.PENDING: ":hourglass:",
+                ExecutionStatus.EXECUTING: ":gear:",
+                ExecutionStatus.APPROVED: ":thumbsup:",
+            }
+            status_icon = status_icons.get(exec_status, ":black_square_button:") if exec_status else ":black_square_button:"
 
-            actions_text += f"{status_icon} `{i+1}. {action.action_type}` {risk_badge}\n"
-            actions_text += f"     `{action.command[:100]}{'...' if len(action.command) > 100 else ''}`\n"
+            # Risk level badge
+            risk_badges = {
+                "low": ":large_green_circle: LOW",
+                "medium": ":large_yellow_circle: MEDIUM",
+                "high": ":red_circle: HIGH",
+                "critical": ":rotating_light: CRITICAL",
+            }
+            risk_badge = risk_badges.get(action.risk_level.lower(), ":white_circle: UNKNOWN")
 
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": actions_text},
-        })
+            # Confidence indicator
+            action_confidence = int(action.confidence * 100)
 
-    # Execution Output - if available
-    if execution_record and execution_record.status == ExecutionStatus.SUCCESS and execution_record.output:
-        output = execution_record.output[:800] if len(execution_record.output) > 800 else execution_record.output
+            # Build action block
+            action_text = f"{status_icon} *Action {i+1}: `{action.action_type}`*\n"
+            action_text += f"├─ *Target:* `{action.target_host}`"
+            if action.target_service:
+                action_text += f" → `{action.target_service}`"
+            action_text += f"\n├─ *Risk:* {risk_badge} | *Confidence:* {action_confidence}%\n"
+            action_text += f"├─ *Command:*\n```{action.command}```\n"
+
+            # Add reasoning if available
+            if action.reasoning:
+                reasoning_short = action.reasoning[:300] + "..." if len(action.reasoning) > 300 else action.reasoning
+                action_text += f"├─ *Reasoning:* {reasoning_short}\n"
+
+            # Add execution status details
+            if exec_status:
+                status_text = exec_status.value.upper()
+                if exec_status == ExecutionStatus.REJECTED:
+                    action_text += f"└─ *Status:* `{status_text}` - Requires manual approval\n"
+                elif exec_status == ExecutionStatus.SUCCESS:
+                    action_text += f"└─ *Status:* `{status_text}` :white_check_mark:\n"
+                elif exec_status == ExecutionStatus.FAILED:
+                    action_text += f"└─ *Status:* `{status_text}` :x:\n"
+                else:
+                    action_text += f"└─ *Status:* `{status_text}`\n"
+
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": action_text},
+            })
+
+            # Show execution output or error for this action
+            if exec_status == ExecutionStatus.SUCCESS and exec_output:
+                output_display = exec_output[:600] + "..." if len(exec_output) > 600 else exec_output
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*:terminal: Output for Action {i+1}:*\n```{output_display}```",
+                    },
+                })
+            elif exec_status == ExecutionStatus.FAILED and exec_error:
+                error_display = exec_error[:400] + "..." if len(exec_error) > 400 else exec_error
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*:warning: Error for Action {i+1}:*\n```{error_display}```",
+                    },
+                })
+
+        blocks.append({"type": "divider"})
+
+    # Approval section - if actions are awaiting approval
+    awaiting_approval = False
+    if all_execution_records:
+        awaiting_approval = any(r.status == ExecutionStatus.REJECTED for r in all_execution_records)
+    elif execution_record and execution_record.status == ExecutionStatus.REJECTED:
+        awaiting_approval = True
+
+    if awaiting_approval:
         blocks.append({
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*:terminal: Execution Output:*\n```{output}```",
+                "text": (
+                    "*:raised_hand: Action Required*\n"
+                    "The above remediation action(s) require manual approval before execution.\n\n"
+                    "*To approve and execute:*\n"
+                    "1. Review the recommended actions and commands above\n"
+                    "2. Verify the target server and service are correct\n"
+                    "3. Execute the command(s) manually on the target server, or\n"
+                    "4. Use your infrastructure automation tools to execute\n\n"
+                    "_All actions are logged for audit purposes._"
+                ),
             },
         })
-    elif execution_record and execution_record.error:
+        blocks.append({"type": "divider"})
+
+    # Affected resources summary
+    if len(incident.affected_servers) > 1 or len(incident.affected_services) > 1:
+        affected_text = "*:link: Affected Resources:*\n"
+        if incident.affected_servers:
+            affected_text += f"• *Servers:* {', '.join(f'`{s}`' for s in incident.affected_servers[:5])}"
+            if len(incident.affected_servers) > 5:
+                affected_text += f" (+{len(incident.affected_servers) - 5} more)"
+            affected_text += "\n"
+        if incident.affected_services:
+            affected_text += f"• *Services:* {', '.join(f'`{s}`' for s in incident.affected_services[:5])}"
+            if len(incident.affected_services) > 5:
+                affected_text += f" (+{len(incident.affected_services) - 5} more)"
+
         blocks.append({
             "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*:warning: Error:*\n```{execution_record.error[:500]}```",
-            },
+            "text": {"type": "mrkdwn", "text": affected_text},
         })
 
-    # Footer with timestamp
+    # Footer with timeline and metadata
+    footer_parts = [
+        f"Detected: {incident.detected_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+    ]
+    if incident.acknowledged_at:
+        footer_parts.append(f"Acked: {incident.acknowledged_at.strftime('%H:%M:%S UTC')}")
+    if incident.resolved_at:
+        footer_parts.append(f"Resolved: {incident.resolved_at.strftime('%H:%M:%S UTC')}")
+
+    footer_text = " | ".join(footer_parts)
+    footer_text += f"\n:robot_face: Sirius AI DevOps Agent | Incident: {incident.id}"
+
     blocks.append({
         "type": "context",
-        "elements": [
-            {
-                "type": "mrkdwn",
-                "text": f"Detected: {incident.detected_at.strftime('%Y-%m-%d %H:%M:%S UTC')} | Sirius AI DevOps Agent",
-            },
-        ],
+        "elements": [{"type": "mrkdwn", "text": footer_text}],
     })
 
+    # Build final message
     message = {
-        "text": f"Sirius {stage_text}: {primary_alert.alertname} on {primary_alert.host}",
+        "text": f"Sirius {stage_text}: {primary_alert.alertname} on {primary_alert.host} ({sev_text})",
         "blocks": blocks,
+        "attachments": [
+            {
+                "color": stage_color,
+                "blocks": []
+            }
+        ]
     }
 
     try:
@@ -258,10 +465,12 @@ async def send_slack_notification(
                     )
                     return True
                 else:
+                    response_text = await response.text()
                     logger.error(
                         "Failed to send Slack notification",
                         incident_id=incident.id,
                         status=response.status,
+                        response=response_text[:200],
                     )
                     return False
     except Exception as e:
