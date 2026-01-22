@@ -19,6 +19,8 @@ services:
       - sirius-logs:/var/log/sirius
       # SSH keys for server access (read-only)
       - ${HOME}/.ssh:/home/agent/.ssh:ro
+      # Persistent data storage (training data, memory)
+      - sirius-data:/var/lib/sirius
     environment:
       # NVIDIA NIM API
       - NVIDIA_API_KEY=${NVIDIA_API_KEY}
@@ -99,4 +101,5 @@ networks:
 
 volumes:
   sirius-logs:
+  sirius-data:    # Persistent storage for training data and memory
   redis-data:
