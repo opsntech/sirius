@@ -4,12 +4,21 @@ AI-powered on-call DevOps agent that monitors Prometheus alerts, performs root c
 
 ## Features
 
+### Core Capabilities
 - **Alert Ingestion**: Receives alerts from Prometheus AlertManager via webhooks
-- **Deduplication & Correlation**: Groups related alerts into incidents
-- **AI Analysis**: Uses NVIDIA NIM (Llama 3.1) for root cause analysis
-- **Server Investigation**: SSH-based tools to check CPU, memory, disk, logs, and processes
+- **Deduplication & Correlation**: Groups related alerts into incidents (fingerprint + time-based)
+- **AI Analysis**: Uses NVIDIA NIM for intelligent root cause analysis
+- **Server Investigation**: 44+ SSH-based diagnostic tools
 - **Human-in-the-Loop**: Slack integration for approval workflows
 - **Safe Remediation**: Circuit breakers, rollback support, and audit logging
+
+### Intelligent Features (v2.0)
+- **Pattern Memory**: Vector-based incident memory for recognizing recurring issues
+- **Iterative Analysis**: Hypothesis-driven investigation with multiple passes
+- **Structured Outputs**: Type-safe Pydantic models for reliable parsing
+- **Adaptive Remediation**: Context-aware command generation based on findings
+- **ML Training Pipeline**: Automatic collection of training data for model fine-tuning
+- **Feedback Loop**: Human feedback integration for continuous improvement
 
 ## Quick Start
 
@@ -117,23 +126,41 @@ servers:
 
 ## Architecture
 
+### v2.0 Intelligent Architecture
+
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     DEVOPS AGENT                                 │
-│                                                                 │
-│  ┌───────────────┐    ┌───────────────┐    ┌───────────────┐   │
-│  │    WEBHOOK    │───▶│    EVENT      │───▶│  AI DECISION  │   │
-│  │    SERVER     │    │   PROCESSOR   │    │    ENGINE     │   │
-│  └───────────────┘    └───────────────┘    └───────────────┘   │
-│                                                   │             │
-│                                      ┌────────────┴──────────┐  │
-│                                      ▼                       ▼  │
-│                               ┌───────────┐          ┌──────────┐
-│                               │  APPROVAL │          │REMEDIATION
-│                               │  (Slack)  │          │ EXECUTOR │
-│                               └───────────┘          └──────────┘
-└─────────────────────────────────────────────────────────────────┘
-                                      │
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           SIRIUS INTELLIGENT CORE                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                  │
+│  │   MEMORY     │    │   PATTERN    │    │   RUNBOOK    │                  │
+│  │   STORE      │◄──►│   MATCHER    │◄──►│   ENGINE     │                  │
+│  │  (Vector DB) │    │   (RAG)      │    │  (Dynamic)   │                  │
+│  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘                  │
+│         │                   │                   │                           │
+│         └───────────────────┼───────────────────┘                           │
+│                             │                                               │
+│  ┌───────────────┐  ┌───────▼───────┐   ┌───────────────┐                  │
+│  │   WEBHOOK     │──│  ORCHESTRATOR │──▶│   FEEDBACK    │──► ML Pipeline   │
+│  │   SERVER      │  │     AGENT     │   │   COLLECTOR   │                  │
+│  └───────────────┘  └───────┬───────┘   └───────────────┘                  │
+│                             │                                               │
+│         ┌───────────────────┼───────────────────┐                           │
+│         ▼                   ▼                   ▼                           │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                     │
+│  │   TRIAGE    │    │  ANALYSIS   │    │ REMEDIATION │                     │
+│  │   AGENT     │    │   AGENT     │    │   AGENT     │                     │
+│  └─────────────┘    └──────┬──────┘    └──────┬──────┘                     │
+│                            │                  │                             │
+│                     ┌──────▼──────┐    ┌──────▼──────┐                     │
+│                     │  SSH TOOLS  │    │  EXECUTOR   │                     │
+│                     │  (44+ cmds) │    │  + VERIFIER │                     │
+│                     └──────┬──────┘    └──────┬──────┘                     │
+│                            │                  │                             │
+└────────────────────────────┼──────────────────┼─────────────────────────────┘
+                             │                  │
+                             └────────┬─────────┘
                                       │ SSH
                                       ▼
                           ┌────────────────────────┐
@@ -143,11 +170,19 @@ servers:
 
 ## AI Agents
 
-The system uses CrewAI with three specialized agents:
+The system uses CrewAI with an enhanced multi-agent architecture:
 
-1. **Triage Agent**: Classifies alert severity and priority
-2. **Analysis Agent**: Investigates root cause using SSH tools
-3. **Remediation Agent**: Recommends safe remediation actions
+### Core Agents
+1. **Orchestrator Agent** (v2.0): Coordinates workflow, manages iteration, routes based on complexity
+2. **Triage Agent**: Classifies severity, estimates blast radius, suggests investigation focus
+3. **Analysis Agent**: Hypothesis-driven root cause investigation using SSH tools
+4. **Remediation Agent**: Context-aware action planning with verification steps
+
+### Supporting Systems
+- **Memory Store**: ChromaDB-based vector storage for incident patterns
+- **Pattern Matcher**: RAG-based similarity search for known issues
+- **Runbook Engine**: Dynamic runbook generation based on findings
+- **Feedback Collector**: Captures outcomes and human feedback for ML training
 
 ## Server Investigation Tools
 
@@ -202,6 +237,56 @@ receivers:
 - **Pre-flight Checks**: Validates preconditions before execution
 - **Post-execution Verification**: Confirms action was successful
 - **Audit Logging**: Full trail of AI decisions and actions
+
+## ML Training Data Pipeline (v2.0)
+
+Sirius automatically collects training data from every incident for model fine-tuning:
+
+### Data Collection Points
+- Alert ingress (raw alert + server context)
+- Triage decisions (classification, routing)
+- Investigation steps (tool outputs, interpretations)
+- Analysis results (root cause, evidence chain)
+- Remediation plans (actions, commands, risk levels)
+- Execution outcomes (success/failure, verification)
+- Human feedback (approvals, corrections, comments)
+
+### Export Formats
+- **JSONL**: Instruction fine-tuning format
+- **Parquet**: Large-scale analysis
+- **HuggingFace Dataset**: Direct model training
+
+### Configuration
+```yaml
+training_data:
+  enabled: true
+  storage_path: /var/lib/sirius/training_data
+  export_format: jsonl
+  min_quality_score: 0.6
+  retention_days: 365
+```
+
+## v2.0 Configuration Options
+
+```yaml
+# Memory and pattern recognition
+memory:
+  enabled: true
+  vector_db: chromadb
+  similarity_threshold: 0.75
+
+# Agent orchestration
+orchestration:
+  max_iterations: 5
+  min_confidence_threshold: 0.7
+  fast_path_confidence: 0.85
+
+# Runbook automation
+runbooks:
+  enabled: true
+  auto_generate: true
+  require_verification: true
+```
 
 ## License
 

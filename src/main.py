@@ -739,6 +739,25 @@ async def get_incident(incident_id: str):
     return incident.to_dict()
 
 
+@app.get("/stats")
+async def get_stats():
+    """Get comprehensive system statistics including memory and training data."""
+    if not event_processor:
+        return {"error": "Event processor not initialized"}
+
+    try:
+        stats = await event_processor.get_system_stats()
+        return stats
+    except Exception as e:
+        logger.error("Failed to get system stats", error=str(e))
+        return {
+            "error": str(e),
+            "queue_size": event_processor.queue_size,
+            "incident_count": event_processor.incident_count,
+            "active_incident_count": event_processor.active_incident_count,
+        }
+
+
 def handle_signal(signum, frame):
     """Handle shutdown signals."""
     logger.info(f"Received signal {signum}, initiating shutdown")

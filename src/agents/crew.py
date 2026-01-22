@@ -1,15 +1,23 @@
-"""CrewAI agent definitions for the DevOps On-Call Agent."""
+"""CrewAI agent definitions for the DevOps On-Call Agent.
+
+Enhanced with:
+- Pattern memory for similar incident detection
+- Training data collection hooks
+- Improved confidence extraction
+"""
 
 import asyncio
 import os
+import re
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any, List
 
 import structlog
 from crewai import Agent, Crew, Process, Task, LLM
 
 from src.config import Settings, get_settings
 from src.models.incident import Incident, IncidentStatus, InvestigationStep, RemediationAction
+from src.models.outputs import TriageOutput, AnalysisOutput, RemediationOutput
 from src.prompts.triage_prompt import TRIAGE_SYSTEM_PROMPT, format_triage_prompt
 from src.prompts.analysis_prompt import ANALYSIS_SYSTEM_PROMPT, format_analysis_prompt
 from src.prompts.remediation_prompt import REMEDIATION_SYSTEM_PROMPT, format_remediation_prompt
@@ -19,9 +27,30 @@ from src.tools.crewai_tools import CREWAI_INVESTIGATION_TOOLS
 logger = structlog.get_logger()
 
 
+# Try to import optional components
+try:
+    from src.data.collector import get_collector, TrainingDataCollector
+    DATA_COLLECTION_AVAILABLE = True
+except ImportError:
+    DATA_COLLECTION_AVAILABLE = False
+    logger.warning("Training data collection not available")
+
+try:
+    from src.memory.incident_memory import get_memory, IncidentMemory, SimilarIncident
+    MEMORY_AVAILABLE = True
+except ImportError:
+    MEMORY_AVAILABLE = False
+    logger.warning("Incident memory not available")
+
+
 class DevOpsCrew:
     """
     CrewAI-based multi-agent system for DevOps incident response.
+
+    Enhanced v2.0 with:
+    - Pattern memory for similar incident detection
+    - Training data collection for ML pipeline
+    - Improved structured output parsing
 
     Agents:
     - Triage Agent: Classifies and prioritizes alerts
@@ -29,10 +58,33 @@ class DevOpsCrew:
     - Remediation Agent: Recommends safe remediation actions
     """
 
-    def __init__(self, settings: Optional[Settings] = None):
+    def __init__(
+        self,
+        settings: Optional[Settings] = None,
+        enable_data_collection: bool = True,
+        enable_memory: bool = True,
+    ):
         self._settings = settings or get_settings()
         self._llm = self._create_llm()
         self._agents = self._create_agents()
+
+        # Initialize data collector
+        self._collector: Optional[Any] = None
+        if enable_data_collection and DATA_COLLECTION_AVAILABLE:
+            try:
+                self._collector = get_collector(enabled=True)
+                logger.info("Training data collection enabled")
+            except Exception as e:
+                logger.warning(f"Failed to initialize data collector: {e}")
+
+        # Initialize memory system
+        self._memory: Optional[Any] = None
+        if enable_memory and MEMORY_AVAILABLE:
+            try:
+                self._memory = get_memory()
+                logger.info("Incident memory enabled")
+            except Exception as e:
+                logger.warning(f"Failed to initialize memory: {e}")
 
     def _create_llm(self) -> LLM:
         """Create the CrewAI LLM for agents using NVIDIA NIM."""
@@ -92,9 +144,12 @@ class DevOpsCrew:
         """
         Run the full incident analysis workflow.
 
+        Enhanced v2.0 workflow:
+        0. Check memory for similar past incidents
         1. Triage: Classify and prioritize
         2. Analysis: Investigate root cause
         3. Remediation: Recommend actions
+        4. Collect training data
 
         Returns the updated incident with analysis results.
         """
@@ -105,9 +160,40 @@ class DevOpsCrew:
             severity=incident.severity.value,
         )
 
+        # Initialize data collection for this incident
+        if self._collector and incident.primary_alert:
+            try:
+                await self._collector.on_alert_received(
+                    incident.primary_alert,
+                    incident,
+                )
+            except Exception as e:
+                logger.warning(f"Data collection failed on alert: {e}")
+
+        # Check memory for similar incidents
+        similar_incidents: List[Any] = []
+        if self._memory:
+            try:
+                similar_incidents = await self._memory.find_similar(incident)
+                if similar_incidents:
+                    logger.info(
+                        "Found similar past incidents",
+                        incident_id=incident.id,
+                        similar_count=len(similar_incidents),
+                        top_similarity=similar_incidents[0].similarity if similar_incidents else 0,
+                    )
+                    # Notify data collector
+                    if self._collector:
+                        await self._collector.on_similar_incidents_found(
+                            incident.id,
+                            [s.to_dict() for s in similar_incidents],
+                        )
+            except Exception as e:
+                logger.warning(f"Memory lookup failed: {e}")
+
         try:
             # Phase 1: Triage
-            triage_result = await self._run_triage(incident)
+            triage_result = await self._run_triage(incident, similar_incidents)
             incident.add_investigation_step(InvestigationStep(
                 timestamp=datetime.utcnow(),
                 agent="triage",
@@ -117,13 +203,29 @@ class DevOpsCrew:
                 reasoning="Initial triage classification",
             ))
 
+            # Collect triage data
+            if self._collector:
+                try:
+                    triage_data = self._parse_triage_output(triage_result)
+                    await self._collector.on_triage_complete(incident.id, triage_data)
+                except Exception as e:
+                    logger.warning(f"Data collection failed on triage: {e}")
+
             # Phase 2: Analysis
-            analysis_result = await self._run_analysis(incident)
+            analysis_result = await self._run_analysis(incident, similar_incidents)
             # Note: Analysis agent will add its own investigation steps via tool calls
 
             # Extract root cause from analysis
             root_cause, confidence = self._extract_root_cause(analysis_result)
             incident.set_root_cause(root_cause, confidence)
+
+            # Collect analysis data
+            if self._collector:
+                try:
+                    analysis_data = self._parse_analysis_output(analysis_result, root_cause, confidence)
+                    await self._collector.on_analysis_complete(incident.id, analysis_data)
+                except Exception as e:
+                    logger.warning(f"Data collection failed on analysis: {e}")
 
             # Phase 3: Remediation
             remediation_result = await self._run_remediation(incident)
@@ -133,10 +235,18 @@ class DevOpsCrew:
             for action in actions:
                 incident.add_recommended_action(action)
 
+            # Collect remediation data
+            if self._collector:
+                try:
+                    remediation_data = self._parse_remediation_output(remediation_result, actions)
+                    await self._collector.on_remediation_complete(incident.id, remediation_data)
+                except Exception as e:
+                    logger.warning(f"Data collection failed on remediation: {e}")
+
             logger.info(
                 "Incident analysis complete",
                 incident_id=incident.id,
-                root_cause=incident.root_cause,
+                root_cause=incident.root_cause[:100] if incident.root_cause else None,
                 confidence=incident.root_cause_confidence,
                 has_recommendation=len(incident.recommended_actions) > 0,
             )
@@ -151,11 +261,23 @@ class DevOpsCrew:
             )
             raise
 
-    async def _run_triage(self, incident: Incident) -> str:
+    async def _run_triage(
+        self,
+        incident: Incident,
+        similar_incidents: Optional[List[Any]] = None,
+    ) -> str:
         """Run triage classification."""
         logger.debug("Running triage", incident_id=incident.id)
 
         prompt = format_triage_prompt(incident.primary_alert)
+
+        # Add similar incident context if available
+        if similar_incidents:
+            prompt += "\n\n## Similar Past Incidents:\n"
+            for sim in similar_incidents[:3]:
+                prompt += f"- **{sim.incident_id}** (similarity: {sim.similarity:.0%})\n"
+                prompt += f"  Root cause: {sim.root_cause[:200]}\n"
+                prompt += f"  Resolution: {sim.resolution_type}\n"
 
         task = Task(
             description=prompt,
@@ -174,11 +296,24 @@ class DevOpsCrew:
         result = await asyncio.to_thread(crew.kickoff)
         return str(result)
 
-    async def _run_analysis(self, incident: Incident) -> str:
+    async def _run_analysis(
+        self,
+        incident: Incident,
+        similar_incidents: Optional[List[Any]] = None,
+    ) -> str:
         """Run root cause analysis."""
         logger.debug("Running analysis", incident_id=incident.id)
 
         prompt = format_analysis_prompt(incident)
+
+        # Add similar incident context if available
+        if similar_incidents:
+            prompt += "\n\n## Similar Past Incidents (for reference):\n"
+            for sim in similar_incidents[:3]:
+                prompt += f"- **{sim.incident_id}** (similarity: {sim.similarity:.0%})\n"
+                prompt += f"  Root cause: {sim.root_cause[:300]}\n"
+                if sim.actions_taken:
+                    prompt += f"  Actions: {', '.join(sim.actions_taken[:3])}\n"
 
         task = Task(
             description=prompt,
@@ -219,20 +354,102 @@ class DevOpsCrew:
         return str(result)
 
     def _extract_root_cause(self, analysis_result: str) -> tuple[str, float]:
-        """Extract root cause and confidence from analysis result."""
+        """Extract root cause and confidence from analysis result.
+
+        Improved extraction with proper confidence clamping.
+        """
         # Simple extraction - in production, use structured output
         root_cause = analysis_result
 
-        # Look for confidence score in result
+        # Look for confidence score in result - look for specific patterns
         confidence = 0.7  # Default confidence
-        if "confidence" in analysis_result.lower():
-            # Try to extract percentage
-            import re
-            match = re.search(r'(\d+)%', analysis_result)
+
+        # Try multiple patterns to find confidence
+        confidence_patterns = [
+            r'confidence[:\s]+(\d+)\s*%',  # "confidence: 85%"
+            r'confidence[:\s]+(\d+\.?\d*)',  # "confidence: 0.85" or "confidence: 85"
+            r'(\d+)%\s+confidence',  # "85% confidence"
+            r'confidence\s+(?:level|score)?[:\s]+(\d+)',  # "confidence level: 85"
+        ]
+
+        for pattern in confidence_patterns:
+            match = re.search(pattern, analysis_result.lower())
             if match:
-                confidence = int(match.group(1)) / 100
+                try:
+                    val = float(match.group(1))
+                    # If value > 1, assume it's a percentage
+                    if val > 1:
+                        val = val / 100
+                    # Clamp to valid range
+                    confidence = max(0.0, min(1.0, val))
+                    break
+                except (ValueError, IndexError):
+                    continue
 
         return root_cause, confidence
+
+    def _parse_triage_output(self, triage_result: str) -> Dict[str, Any]:
+        """Parse triage output into structured format for data collection."""
+        # Extract key fields from triage result
+        severity = "medium"
+        urgency = "soon"
+
+        # Try to extract severity
+        severity_match = re.search(
+            r'severity[:\s]*(critical|high|medium|low|info)',
+            triage_result.lower()
+        )
+        if severity_match:
+            severity = severity_match.group(1)
+
+        # Try to extract urgency
+        urgency_match = re.search(
+            r'urgency[:\s]*(immediate|soon|scheduled)',
+            triage_result.lower()
+        )
+        if urgency_match:
+            urgency = urgency_match.group(1)
+
+        return {
+            "severity": severity,
+            "urgency": urgency,
+            "reasoning": triage_result[:500],
+            "raw_output": triage_result,
+        }
+
+    def _parse_analysis_output(
+        self,
+        analysis_result: str,
+        root_cause: str,
+        confidence: float,
+    ) -> Dict[str, Any]:
+        """Parse analysis output into structured format for data collection."""
+        return {
+            "root_cause": root_cause[:1000],
+            "root_cause_confidence": confidence,
+            "raw_output": analysis_result,
+            "evidence_summary": analysis_result[:500],
+        }
+
+    def _parse_remediation_output(
+        self,
+        remediation_result: str,
+        actions: List[RemediationAction],
+    ) -> Dict[str, Any]:
+        """Parse remediation output into structured format for data collection."""
+        return {
+            "steps": [
+                {
+                    "action_type": a.action_type,
+                    "target_host": a.target_host,
+                    "command": a.command,
+                    "risk_level": a.risk_level,
+                    "requires_approval": a.requires_approval,
+                }
+                for a in actions
+            ],
+            "raw_output": remediation_result,
+        }
 
     def _extract_remediation_actions(
         self,
@@ -395,6 +612,83 @@ class DevOpsCrew:
         )
 
         return action
+
+    async def record_incident_resolution(
+        self,
+        incident: Incident,
+        success: bool,
+        mttr_seconds: Optional[int] = None,
+        actions_taken: Optional[List[str]] = None,
+    ):
+        """Record incident resolution in memory and data collector.
+
+        Call this after an incident is resolved to:
+        1. Store the incident in memory for future pattern matching
+        2. Complete the training data collection
+        """
+        resolution_type = "auto_resolved" if success else "manual"
+        actions = actions_taken or [a.action_type for a in incident.recommended_actions]
+
+        # Store in memory for future pattern matching
+        if self._memory and incident.root_cause:
+            try:
+                await self._memory.store_incident(
+                    incident=incident,
+                    root_cause=incident.root_cause,
+                    resolution_type=resolution_type,
+                    actions_taken=actions,
+                    success=success,
+                    mttr_seconds=mttr_seconds,
+                )
+                logger.info(
+                    "Stored incident in memory",
+                    incident_id=incident.id,
+                    success=success,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to store incident in memory: {e}")
+
+        # Record in data collector
+        if self._collector:
+            try:
+                await self._collector.on_incident_resolved(
+                    incident_id=incident.id,
+                    resolution_success=success,
+                    mttr_seconds=mttr_seconds,
+                    caused_additional_alerts=False,
+                    escalated=not success,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record incident resolution: {e}")
+
+    async def record_human_feedback(
+        self,
+        incident_id: str,
+        approved: bool,
+        feedback_text: Optional[str] = None,
+    ):
+        """Record human feedback (approval/rejection) for training data."""
+        if self._collector:
+            try:
+                await self._collector.on_human_feedback(
+                    incident_id=incident_id,
+                    approved=approved,
+                    feedback_text=feedback_text,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record human feedback: {e}")
+
+    async def get_memory_stats(self) -> Dict[str, Any]:
+        """Get memory system statistics."""
+        if self._memory:
+            return await self._memory.get_stats()
+        return {"enabled": False}
+
+    async def get_collector_stats(self) -> Dict[str, Any]:
+        """Get data collector statistics."""
+        if self._collector:
+            return await self._collector.get_stats()
+        return {"enabled": False}
 
 
 # Global crew instance

@@ -67,3 +67,33 @@ logging:
   level: INFO
   format: json
   audit_log_path: /var/log/sirius/audit.log
+
+# v2.0: Memory and Pattern Recognition
+memory:
+  enabled: true
+  storage_path: /var/lib/sirius/memory
+  similarity_threshold: 0.75
+  max_similar_incidents: 5
+  use_vector_db: false  # Set true if ChromaDB is installed
+
+# v2.0: Training Data Collection
+training_data:
+  enabled: true
+  storage_path: /var/lib/sirius/training_data
+  export_format: jsonl
+  min_quality_score: 0.6
+  retention_days: 365
+
+# v2.0: Agent Orchestration
+orchestration:
+  max_iterations: 5
+  min_confidence_threshold: 0.7
+  fast_path_confidence: 0.85
+  iteration_timeout_seconds: 300
+
+# v2.0: Runbook Automation
+runbooks:
+  enabled: true
+  template_path: config/runbooks/
+  auto_generate: true
+  require_verification: true

@@ -459,3 +459,92 @@ class EventProcessor:
     def active_incident_count(self) -> int:
         """Get the number of active incidents."""
         return len(self.get_active_incidents())
+
+    async def record_incident_resolution(
+        self,
+        incident_id: str,
+        success: bool,
+        mttr_seconds: Optional[int] = None,
+    ):
+        """Record incident resolution for memory and training data.
+
+        This should be called when an incident is resolved (either
+        automatically or manually) to store the resolution in memory
+        for future pattern matching.
+        """
+        incident = self._incidents.get(incident_id)
+        if not incident:
+            logger.warning(
+                "Cannot record resolution - incident not found",
+                incident_id=incident_id,
+            )
+            return
+
+        # Try to get the crew and record resolution
+        try:
+            from src.agents.crew import get_crew
+            crew = get_crew()
+
+            actions_taken = [a.action_type for a in incident.recommended_actions]
+            await crew.record_incident_resolution(
+                incident=incident,
+                success=success,
+                mttr_seconds=mttr_seconds,
+                actions_taken=actions_taken,
+            )
+
+            logger.info(
+                "Recorded incident resolution",
+                incident_id=incident_id,
+                success=success,
+                mttr_seconds=mttr_seconds,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to record incident resolution",
+                incident_id=incident_id,
+                error=str(e),
+            )
+
+    async def record_human_feedback(
+        self,
+        incident_id: str,
+        approved: bool,
+        feedback_text: Optional[str] = None,
+    ):
+        """Record human feedback (approval/rejection) for training data."""
+        try:
+            from src.agents.crew import get_crew
+            crew = get_crew()
+            await crew.record_human_feedback(
+                incident_id=incident_id,
+                approved=approved,
+                feedback_text=feedback_text,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to record human feedback",
+                incident_id=incident_id,
+                error=str(e),
+            )
+
+    async def get_system_stats(self) -> dict:
+        """Get comprehensive system statistics."""
+        stats = {
+            "queue_size": self.queue_size,
+            "incident_count": self.incident_count,
+            "active_incident_count": self.active_incident_count,
+            "analyzed_count": len(self._analyzed_incidents),
+        }
+
+        # Try to get memory and collector stats
+        try:
+            from src.agents.crew import get_crew
+            crew = get_crew()
+            stats["memory"] = await crew.get_memory_stats()
+            stats["collector"] = await crew.get_collector_stats()
+        except Exception as e:
+            stats["memory"] = {"error": str(e)}
+            stats["collector"] = {"error": str(e)}
+
+        return stats

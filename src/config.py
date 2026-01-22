@@ -71,6 +71,40 @@ class ServerSettings(BaseModel):
     workers: int = 4
 
 
+class MemoryConfig(BaseModel):
+    """Incident memory configuration for pattern recognition."""
+    enabled: bool = True
+    storage_path: str = "/var/lib/sirius/memory"
+    similarity_threshold: float = 0.75
+    max_similar_incidents: int = 5
+    use_vector_db: bool = False  # Set True if ChromaDB available
+
+
+class TrainingDataConfig(BaseModel):
+    """Training data collection configuration."""
+    enabled: bool = True
+    storage_path: str = "/var/lib/sirius/training_data"
+    export_format: str = "jsonl"  # jsonl, parquet
+    min_quality_score: float = 0.6
+    retention_days: int = 365
+
+
+class OrchestrationConfig(BaseModel):
+    """Agent orchestration configuration."""
+    max_iterations: int = 5
+    min_confidence_threshold: float = 0.7
+    fast_path_confidence: float = 0.85
+    iteration_timeout_seconds: int = 300
+
+
+class RunbookConfig(BaseModel):
+    """Runbook automation configuration."""
+    enabled: bool = True
+    template_path: str = "config/runbooks/"
+    auto_generate: bool = True
+    require_verification: bool = True
+
+
 class Settings(BaseSettings):
     """Main application settings."""
 
@@ -102,6 +136,18 @@ class Settings(BaseSettings):
 
     # Server inventory
     servers: List[ServerConfig] = Field(default_factory=list)
+
+    # v2.0: Memory and Pattern Recognition
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
+
+    # v2.0: Training Data Collection
+    training_data: TrainingDataConfig = Field(default_factory=TrainingDataConfig)
+
+    # v2.0: Agent Orchestration
+    orchestration: OrchestrationConfig = Field(default_factory=OrchestrationConfig)
+
+    # v2.0: Runbook Automation
+    runbooks: RunbookConfig = Field(default_factory=RunbookConfig)
 
     class Config:
         env_prefix = "DEVOPS_AGENT_"
@@ -209,6 +255,22 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
     # Redis
     if "redis" in yaml_config:
         settings_dict["redis_url"] = yaml_config["redis"].get("url")
+
+    # v2.0: Memory settings
+    if "memory" in yaml_config:
+        settings_dict["memory"] = MemoryConfig(**yaml_config["memory"])
+
+    # v2.0: Training data settings
+    if "training_data" in yaml_config:
+        settings_dict["training_data"] = TrainingDataConfig(**yaml_config["training_data"])
+
+    # v2.0: Orchestration settings
+    if "orchestration" in yaml_config:
+        settings_dict["orchestration"] = OrchestrationConfig(**yaml_config["orchestration"])
+
+    # v2.0: Runbook settings
+    if "runbooks" in yaml_config:
+        settings_dict["runbooks"] = RunbookConfig(**yaml_config["runbooks"])
 
     # Load server inventory
     inventory_config = yaml_config.get("inventory", {})
