@@ -528,6 +528,20 @@ class EventProcessor:
                 error=str(e),
             )
 
+    async def clear_deduplication(self):
+        """Clear all deduplication state to allow reprocessing of alerts."""
+        await self._deduplicator.clear()
+        logger.info("Deduplication cache cleared")
+
+    async def clear_all_state(self):
+        """Clear all state including deduplication, incidents, and analyzed set."""
+        await self._deduplicator.clear()
+        async with self._lock:
+            self._incidents.clear()
+            self._incidents_by_alert.clear()
+            self._analyzed_incidents.clear()
+        logger.info("All event processor state cleared")
+
     async def get_system_stats(self) -> dict:
         """Get comprehensive system statistics."""
         stats = {
@@ -535,6 +549,7 @@ class EventProcessor:
             "incident_count": self.incident_count,
             "active_incident_count": self.active_incident_count,
             "analyzed_count": len(self._analyzed_incidents),
+            "dedup_cache_size": len(self._deduplicator._seen),
         }
 
         # Try to get memory and collector stats

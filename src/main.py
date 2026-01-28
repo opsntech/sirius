@@ -758,6 +758,26 @@ async def get_stats():
         }
 
 
+@app.post("/clear/dedup")
+async def clear_deduplication():
+    """Clear deduplication cache to allow reprocessing of alerts."""
+    if not event_processor:
+        return {"error": "Event processor not initialized"}
+
+    await event_processor.clear_deduplication()
+    return {"status": "ok", "message": "Deduplication cache cleared"}
+
+
+@app.post("/clear/all")
+async def clear_all_state():
+    """Clear all state (dedup, incidents, analyzed). Use with caution!"""
+    if not event_processor:
+        return {"error": "Event processor not initialized"}
+
+    await event_processor.clear_all_state()
+    return {"status": "ok", "message": "All state cleared"}
+
+
 def handle_signal(signum, frame):
     """Handle shutdown signals."""
     logger.info(f"Received signal {signum}, initiating shutdown")
