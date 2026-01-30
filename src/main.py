@@ -652,8 +652,8 @@ async def execute_and_notify(
         else:
             await notifier.update_incident_status(incident, "failed")
 
-    # Send Slack notification with all execution results
-    if webhook_url:
+    # Send Slack notification only if Asgard is NOT enabled (fallback mode)
+    if webhook_url and not notifier:
         last_record = execution_records[-1] if execution_records else None
         await send_slack_notification(incident, webhook_url, last_record, execution_records)
 
@@ -763,8 +763,8 @@ async def lifespan(app: FastAPI):
                     await asgard_notifier.update_incident_status(incident, "failed")
                 except Exception:
                     pass
-            # Try to send error notification to Slack
-            if slack_webhook_url:
+            # Send Slack notification only if Asgard is NOT enabled (fallback mode)
+            elif slack_webhook_url:
                 try:
                     await send_slack_notification(incident, slack_webhook_url)
                 except Exception:
