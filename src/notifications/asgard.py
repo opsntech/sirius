@@ -127,7 +127,7 @@ class AsgardNotifier:
         for idx, action in enumerate(incident.recommended_actions):
             actions.append({
                 "action_type": action.action_type,
-                "description": action.description,
+                "description": action.reasoning,  # Use reasoning as description
                 "target_host": action.target_host,
                 "target_service": action.target_service,
                 "command": action.command,
