@@ -20,6 +20,12 @@ from src.agents.crew import DevOpsCrew
 from src.models.incident import Incident, RemediationAction
 from src.models.execution import ExecutionRecord, ExecutionStatus
 from src.remediation.executor import get_executor, RemediationExecutor
+from src.notifications.asgard import (
+    AsgardNotifier,
+    ApprovalStatus,
+    get_asgard_notifier,
+    cleanup_asgard_notifier,
+)
 
 
 # Configure structured logging
@@ -75,6 +81,7 @@ def setup_logging(settings: Settings):
 event_processor: Optional[EventProcessor] = None
 devops_crew: Optional[DevOpsCrew] = None
 remediation_executor: Optional[RemediationExecutor] = None
+asgard_notifier: Optional[AsgardNotifier] = None
 logger = structlog.get_logger()
 
 
@@ -483,10 +490,13 @@ async def execute_and_notify(
     incident: Incident,
     executor: RemediationExecutor,
     webhook_url: str,
+    notifier: Optional[AsgardNotifier] = None,
+    settings: Optional[Settings] = None,
 ) -> list[ExecutionRecord]:
     """Execute all remediation actions sequentially and send notification with results.
 
     Executes each action in order, stopping on first failure.
+    For actions requiring approval, waits for Asgard approval before execution.
     Returns list of all execution records.
     """
     if not incident.recommended_actions:
@@ -495,17 +505,74 @@ async def execute_and_notify(
             incident_id=incident.id,
         )
         # Still send analysis-only notification
-        await send_slack_notification(incident, webhook_url)
+        if webhook_url:
+            await send_slack_notification(incident, webhook_url)
         return []
 
     execution_records = []
     total_actions = len(incident.recommended_actions)
 
+    # Get auto-approve risk levels from settings
+    auto_approve_levels = []
+    if settings:
+        auto_approve_levels = settings.approval.auto_approve_risk_levels
+
+    # Check if any action requires approval (not auto-approved)
+    requires_approval = any(
+        action.risk_level.lower() not in auto_approve_levels
+        for action in incident.recommended_actions
+    )
+
     logger.info(
         "Starting remediation sequence",
         incident_id=incident.id,
         total_actions=total_actions,
+        requires_approval=requires_approval,
     )
+
+    # If approval required and Asgard is enabled, wait for approval
+    if requires_approval and notifier:
+        logger.info(
+            "Waiting for Asgard approval",
+            incident_id=incident.id,
+        )
+
+        # Get approval timeout from settings
+        timeout_minutes = 5
+        if settings:
+            timeout_minutes = settings.approval.approval_timeout_minutes
+
+        approval_status = await notifier.wait_for_approval(
+            incident.id,
+            timeout_minutes=timeout_minutes,
+        )
+
+        if approval_status.status != "approved":
+            logger.warning(
+                "Remediation not approved",
+                incident_id=incident.id,
+                status=approval_status.status,
+                reason=approval_status.reason,
+            )
+            # Create rejected execution records for all actions
+            for action in incident.recommended_actions:
+                execution_records.append(ExecutionRecord(
+                    incident_id=incident.id,
+                    action=action,
+                    status=ExecutionStatus.REJECTED,
+                    error=f"Approval {approval_status.status}: {approval_status.reason or 'No reason provided'}",
+                ))
+
+            # Send notification about rejection
+            if webhook_url:
+                await send_slack_notification(incident, webhook_url, execution_records[-1], execution_records)
+            return execution_records
+
+        logger.info(
+            "Remediation approved",
+            incident_id=incident.id,
+            approved_by=approval_status.approved_by,
+        )
 
     for i, action in enumerate(incident.recommended_actions):
         logger.info(
@@ -521,6 +588,15 @@ async def execute_and_notify(
             # Execute the remediation action
             execution_record = await executor.execute(incident, action)
             execution_records.append(execution_record)
+
+            # Send execution result to Asgard
+            if notifier:
+                await notifier.send_execution_result(
+                    incident_id=incident.id,
+                    action_id=i,
+                    status="success" if execution_record.status == ExecutionStatus.SUCCESS else "failed",
+                    output=execution_record.output or execution_record.error or "",
+                )
 
             # Update incident status on first successful action
             if execution_record.status == ExecutionStatus.SUCCESS:
@@ -547,6 +623,14 @@ async def execute_and_notify(
                 action_type=action.action_type,
                 error=str(e),
             )
+            # Send failure to Asgard
+            if notifier:
+                await notifier.send_execution_result(
+                    incident_id=incident.id,
+                    action_id=i,
+                    status="failed",
+                    output=str(e),
+                )
             break
 
     # Log completion summary
@@ -559,10 +643,19 @@ async def execute_and_notify(
         successful=successful,
     )
 
-    # Send notification with all execution results
-    # Use the last execution record for the main status display
-    last_record = execution_records[-1] if execution_records else None
-    await send_slack_notification(incident, webhook_url, last_record, execution_records)
+    # Update incident status in Asgard
+    if notifier:
+        if successful == total_actions:
+            await notifier.update_incident_status(incident, "resolved")
+        elif successful > 0:
+            await notifier.update_incident_status(incident, "partially_resolved")
+        else:
+            await notifier.update_incident_status(incident, "failed")
+
+    # Send Slack notification with all execution results
+    if webhook_url:
+        last_record = execution_records[-1] if execution_records else None
+        await send_slack_notification(incident, webhook_url, last_record, execution_records)
 
     return execution_records
 
@@ -570,7 +663,7 @@ async def execute_and_notify(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global event_processor, devops_crew, remediation_executor
+    global event_processor, devops_crew, remediation_executor, asgard_notifier
 
     settings = get_settings()
     setup_logging(settings)
@@ -591,10 +684,21 @@ async def lifespan(app: FastAPI):
     remediation_executor = get_executor(settings)
     logger.info("Remediation executor initialized")
 
+    # Initialize Asgard notifier if enabled
+    if settings.asgard.enabled:
+        asgard_notifier = get_asgard_notifier()
+        logger.info(
+            "Asgard notifier initialized",
+            base_url=settings.asgard.base_url,
+        )
+    else:
+        asgard_notifier = None
+        logger.info("Asgard notifications disabled")
+
     # Initialize event processor
     event_processor = EventProcessor(settings)
 
-    # Get Slack webhook URL for notifications
+    # Get Slack webhook URL for notifications (optional fallback)
     slack_webhook_url = settings.approval.slack_webhook_url
 
     # Wire up AI analysis callback that also triggers remediation
@@ -615,16 +719,33 @@ async def lifespan(app: FastAPI):
                 actions_recommended=len(analyzed_incident.recommended_actions),
             )
 
-            # Phase 2: Execute remediation and notify
-            if slack_webhook_url:
+            # Phase 2: Send to Asgard for approval workflow
+            if asgard_notifier:
+                success = await asgard_notifier.send_incident(analyzed_incident)
+                if success:
+                    logger.info(
+                        "Incident sent to Asgard",
+                        incident_id=incident.id,
+                    )
+                else:
+                    logger.warning(
+                        "Failed to send incident to Asgard",
+                        incident_id=incident.id,
+                    )
+
+            # Phase 3: Execute remediation and notify
+            # Asgard is primary, Slack is optional fallback
+            if asgard_notifier or slack_webhook_url:
                 await execute_and_notify(
                     analyzed_incident,
                     remediation_executor,
-                    slack_webhook_url,
+                    slack_webhook_url,  # Can be empty if only using Asgard
+                    notifier=asgard_notifier,
+                    settings=settings,
                 )
             else:
                 logger.warning(
-                    "Slack webhook not configured, skipping remediation execution",
+                    "No notification system configured, skipping remediation execution",
                     incident_id=incident.id,
                 )
 
@@ -636,7 +757,13 @@ async def lifespan(app: FastAPI):
                 incident_id=incident.id,
                 error=str(e),
             )
-            # Try to send error notification
+            # Try to send error notification to Asgard
+            if asgard_notifier:
+                try:
+                    await asgard_notifier.update_incident_status(incident, "failed")
+                except Exception:
+                    pass
+            # Try to send error notification to Slack
             if slack_webhook_url:
                 try:
                     await send_slack_notification(incident, slack_webhook_url)
@@ -646,11 +773,13 @@ async def lifespan(app: FastAPI):
 
     event_processor.set_analysis_callback(analyze_and_remediate)
 
-    # No separate notification callback needed - it's integrated into analyze_and_remediate
+    # Log notification configuration
+    if asgard_notifier:
+        logger.info("Asgard notifications enabled", base_url=settings.asgard.base_url)
     if slack_webhook_url:
         logger.info("Slack notifications configured", channel=settings.approval.slack_channel)
-    else:
-        logger.warning("Slack webhook URL not configured, notifications disabled")
+    if not asgard_notifier and not slack_webhook_url:
+        logger.warning("No notification system configured")
 
     await event_processor.start()
 
@@ -658,6 +787,7 @@ async def lifespan(app: FastAPI):
     app.state.event_processor = event_processor
     app.state.devops_crew = devops_crew
     app.state.remediation_executor = remediation_executor
+    app.state.asgard_notifier = asgard_notifier
     app.state.settings = settings
 
     logger.info("DevOps On-Call Agent (Sirius) started successfully")
@@ -669,6 +799,11 @@ async def lifespan(app: FastAPI):
 
     if event_processor:
         await event_processor.stop()
+
+    # Cleanup Asgard notifier
+    if asgard_notifier:
+        await cleanup_asgard_notifier()
+        logger.info("Asgard notifier cleaned up")
 
     logger.info("DevOps On-Call Agent stopped")
 

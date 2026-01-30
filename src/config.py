@@ -105,6 +105,15 @@ class RunbookConfig(BaseModel):
     require_verification: bool = True
 
 
+class AsgardConfig(BaseModel):
+    """Asgard central monitoring server configuration."""
+    enabled: bool = True
+    base_url: str = "http://localhost:5000"
+    api_key: str = ""
+    timeout_seconds: int = 30
+    poll_interval_seconds: int = 5
+
+
 class Settings(BaseSettings):
     """Main application settings."""
 
@@ -148,6 +157,9 @@ class Settings(BaseSettings):
 
     # v2.0: Runbook Automation
     runbooks: RunbookConfig = Field(default_factory=RunbookConfig)
+
+    # Asgard central monitoring server
+    asgard: AsgardConfig = Field(default_factory=AsgardConfig)
 
     class Config:
         env_prefix = "DEVOPS_AGENT_"
@@ -272,6 +284,10 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
     if "runbooks" in yaml_config:
         settings_dict["runbooks"] = RunbookConfig(**yaml_config["runbooks"])
 
+    # Asgard settings
+    if "asgard" in yaml_config:
+        settings_dict["asgard"] = AsgardConfig(**yaml_config["asgard"])
+
     # Load server inventory
     inventory_config = yaml_config.get("inventory", {})
     if inventory_config.get("type") == "file":
@@ -306,6 +322,15 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
     ssh_known_hosts = os.environ.get("SSH_KNOWN_HOSTS", "")
     if ssh_known_hosts:
         settings.ssh.known_hosts_path = ssh_known_hosts
+
+    # Override Asgard settings from environment
+    asgard_url = os.environ.get("ASGARD_URL", "")
+    if asgard_url:
+        settings.asgard.base_url = asgard_url
+
+    asgard_api_key = os.environ.get("ASGARD_API_KEY", "")
+    if asgard_api_key:
+        settings.asgard.api_key = asgard_api_key
 
     return settings
 

@@ -12,9 +12,9 @@ nvidia:
 
   development:
     base_url: https://integrate.api.nvidia.com/v1
-    model: deepseek-ai/deepseek-r1-distill-qwen-32b
+    model: qwen/qwen3-coder-480b-a35b-instruct
     api_key: ${NVIDIA_API_KEY}  # Set via environment variable
-    timeout: 60
+    timeout: 90  # Increased for NVIDIA API reliability
     max_tokens: 4096
     temperature: 0.5
 
@@ -97,3 +97,12 @@ runbooks:
   template_path: config/runbooks/
   auto_generate: true
   require_verification: true
+
+# Asgard Central Monitoring Server
+# Replaces Slack for notifications and approvals
+asgard:
+  enabled: true
+  base_url: ${ASGARD_URL:-http://localhost:5000}
+  api_key: ${ASGARD_API_KEY:-change-me-in-production}
+  timeout_seconds: 30
+  poll_interval_seconds: 5
